@@ -1,6 +1,29 @@
 {
   "releases": [
     {
+      "version": "1.2.14",
+      "date": "2026-11-12",
+      "changes": [
+        "Lowering the brightness with the keys no longer turns the screen off: the lowest step keeps it lit.",
+        "The volume goes all the way to 100%. It stopped at 99%.",
+        "Closing Viewer, Graphis or Praxis closes it. They kept running after their window was closed, and Quit in Activity no longer says they are not answering.",
+        "Swiping up with three fingers puts a window back to its size. It closed or hid the window.",
+        "The dock rises from the bottom edge of every screen, not only the first.",
+        "Files shows pictures in the gallery, previews text files, PDFs, music and videos, and lists your computer's other drives.",
+        "Settings > Sound has a level and a mute for the microphone.",
+        "Restart and Shut down from search, and Firmware on the Session screen, wait for a second press before they act.",
+        "Setup starts on computers whose disk uses the older layout, keeps the Wi-Fi password while you type it, and erases a disk only after you choose to on the Erase page.",
+        "The calculator in search gives results again.",
+        "An update can no longer bring a newer window manager than the one Tacit was tested with. That sent some computers back to the lock screen after the password.",
+        "In Thyris, a pinned page can be closed, a download no longer leaves an empty page behind, and YouTube's ads are blocked again.",
+        "In Praxis, sending something while a permission question is open answers it, a deleted conversation shows in Archived at once, and switching between Claude accounts works.",
+        "A video playing in front of you keeps the screen awake, so it no longer locks or sleeps in the middle of a film.",
+        "The wallpaper comes back after you lock and unlock.",
+        "Moving or resizing a window with Super no longer raises the dock, and focusing a window no longer moves the pointer.",
+        "And about 600 smaller fixes across the desktop, Settings, Files, Apps, Praxis and Setup."
+      ]
+    },
+    {
       "version": "1.2.13",
       "date": "2026-11-05",
       "changes": [
