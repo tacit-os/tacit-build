@@ -14,7 +14,10 @@ post_upgrade() {
 # The mirror list: Tacit's tested copy of Arch (mirror.tacitos.co, Arch as it was on the day Tacit tested), so an update
 # from Restart or from pacman installs that set and nothing newer. Moved there from the list Setup wrote before 1.0.2
 # (Arch's worldwide mirrors, whatever Arch had that day) and from one with no server at all (the package's own has every
-# line commented out, and then nothing could install or update). A list the person changed is theirs.
+# line commented out, and then nothing could install or update). A list the person changed is theirs, but it gets Tacit's
+# server in front when it has none: without it a full update came from Arch's newest day, whose Hyprland the plugins
+# (tacit-boot, tacit-portal) are not built for, and refused. A mention of the server, even commented out, is the
+# person's own choice and stays.
 _mirrors() {
 	local m=/etc/pacman.d/mirrorlist
 	if [ "$(uname -m)" = aarch64 ]; then
@@ -26,6 +29,9 @@ Server = https://fastly.mirror.pkgbuild.com/$repo/os/$arch'
 	if ! grep -q '^Server' "$m" 2>/dev/null || [ "$(grep -v '^\s*$' "$m")" = "$old" ]; then
 		printf '%s\n' '# Tacit: Arch as Tacit tested it. Updates come through here, from Restart or from pacman.' \
 			'Server = https://mirror.tacitos.co/$repo/os/$arch' > "$m"
+	elif ! grep -q 'mirror\.tacitos\.co' "$m"; then
+		{ printf '%s\n' '# Tacit: Arch as Tacit tested it, ahead of your own servers. Comment the line out to use only your own.' \
+			'Server = https://mirror.tacitos.co/$repo/os/$arch' ''; cat "$m"; } > "$m.tacit" && mv "$m.tacit" "$m"
 	fi
 }
 
