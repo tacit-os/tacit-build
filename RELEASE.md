@@ -38,7 +38,8 @@ Owner, 2026-10-25: the numbers follow how a release reaches people, not how many
    the release's bug list.
 2. **Pick the day of Arch.** `tools/arch-day` is what installs have now. A newer day is a candidate: build and test
    with `ARCH_MIRROR=https://archive.archlinux.org/repos/YYYY/MM/DD/$repo/os/$arch`. A day with another Hyprland needs
-   tacit-boot and tacit-portal rebuilt on it (their plugins are built for one Hyprland and pin it), or updates refuse.
+   tacit-boot and tacit-portal rebuilt on it (their plugins are built for one Hyprland and pin it), or updates refuse;
+   `tools/arch-day <day>` refuses a day whose Hyprland is not the one the published plugins pin.
 3. **Pin.** Each PKGBUILD names the pushed commit or tag it ships; a version that changed gets a new `pkgver` or
    `pkgrel` (never reuse one, even unpublished: a test computer's cache keeps the old file). `tacit/notes.json` leads
    with the release and what changed in it; `tacit` depends on the new versions it needs.
@@ -52,5 +53,7 @@ Owner, 2026-10-25: the numbers follow how a release reaches people, not how many
    `tools/publish-source <version>`.
 8. **The ISO, with every release** (owner, 2026-10-29: people download the release they read about): `tools/iso`, a
    fresh install in the VM, upload under a new dated name, move the download's `LATEST`; the release notes page links
-   that release's own ISO with its size and SHA256.
+   that release's own ISO with its size and SHA256. `tools/iso` refuses a repo that does not hold this release's
+   `tacit` and records the image's name, size and SHA256; `tools/release-check <version> --iso` must pass before step 9
+   (the 1.2.7 image stayed on the site through 1.2.13, and every install started on bugs already fixed).
 9. **Say it.** The site's release notes and install page; a post in Discord's #releases once the owner has read it.

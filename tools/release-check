@@ -1,6 +1,7 @@
 #!/bin/bash
 # tools/release-check <version>                 the gates a Tacit release passes before tools/publish (RELEASE.md)
 # tools/release-check <version> --vm-passed "…"  records that the VM round for <version> passed, with what was checked
+# tools/release-check <version> --iso            after tools/iso: the install image holds <version>
 #
 # Each gate prints ok or FAIL, and the command fails if any did. It changes nothing but the VM record.
 set -u
@@ -11,6 +12,16 @@ record=$out/vm-passed-$version
 if [ "${2:-}" = --vm-passed ]; then
 	[ -n "${3:-}" ] || { echo "release-check: say what the VM round checked" >&2; exit 2; }
 	printf '%s\n%s\narch day %s\n' "$(date -Is)" "$3" "$(tools/arch-day)" > "$record" && echo "recorded: $record"
+	exit 0
+fi
+if [ "${2:-}" = --iso ]; then
+	# after tools/publish and tools/iso (RELEASE.md, step 8): the install image holds this release, so a new install does
+	# not start on an older one's bugs
+	iso=$out/iso-$version
+	[ -f "$iso" ] || { echo "release-check: no ISO made for $version (tools/iso)" >&2; exit 1; }
+	tv=$(cd tacit && bash -c 'source PKGBUILD; echo "$pkgver-$pkgrel"')
+	[ "$(sed -n 2p "$iso")" = "tacit $tv" ] || { echo "release-check: the ISO has $(sed -n 2p "$iso"), the recipe is tacit $tv: make it again (tools/iso)" >&2; exit 1; }
+	echo "release-check: the ISO for $version: $(sed -n 3p "$iso"), $(sed -n 4p "$iso"), $(sed -n 5p "$iso")"
 	exit 0
 fi
 failed=0

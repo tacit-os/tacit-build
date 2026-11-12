@@ -10,6 +10,11 @@ here=$(dirname "$(dirname "$(readlink -f "$0")")"); cd "$here"
 at=(--project YOUR-PROJECT --zone europe-west4-a); vm=cef-build-x64
 repo=${TACIT_REPO_MIRROR:-$HOME/.cache/tacit-repo}/x86_64
 [ -f "$repo/tacit.db" ] || { echo "no x86_64 repo in $repo (tools/publish first)" >&2; exit 1; }
+# the image is the release being made, not an older one that was left in the repo: [tacit] must hold the tacit this
+# checkout's recipe names (the 1.2.7 image stayed on the download page while Tacit went on to 1.2.13)
+want=$(cd tacit && bash -c 'source PKGBUILD; echo "$pkgver-$pkgrel"')
+have=$(tar -tf "$repo/tacit.db" | sed -n 's|^tacit-\([0-9][^/]*\)/$|\1|p')
+[ "$have" = "$want" ] || { echo "tools/iso: [tacit] in $repo has tacit ${have:-none}, the recipe is $want (tools/publish first)" >&2; exit 1; }
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 cat > "$tmp/inside.sh" <<'INSIDE'
 #!/bin/bash
@@ -102,3 +107,12 @@ if [ "$status" != 0 ]; then
     echo "ISO build container exited with status $status" >&2
     exit 1
 fi
+# what the release notes page needs (RELEASE.md, step 8), and what tools/release-check <version> --iso reads
+name=$(on "ls ~/tacit-iso/out/*.iso" | tail -1)
+[ -n "$name" ] || { echo "tools/iso: no ISO in ~/tacit-iso/out on $vm" >&2; exit 1; }
+size=$(on "stat -c %s $name")
+sha=$(on "sha256sum $name" | cut -d' ' -f1)
+mkdir -p out/x86_64
+printf '%s\ntacit %s\n%s\nsize %s\nsha256 %s\narch day %s\n' "$(date -Is)" "$want" "$(basename "$name")" "$size" "$sha" "$(tools/arch-day)" \
+    > "out/x86_64/iso-${want%-*}"
+echo "the ISO: $(basename "$name"), tacit $want, $size bytes, sha256 $sha"
