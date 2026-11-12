@@ -39,6 +39,13 @@ parted
 gparted
 dosfstools
 e2fsprogs
+# the tools GParted needs to read, shrink and check each kind of partition: without them it showed "---" for what a
+# Btrfs or FAT partition holds and could not shrink Btrfs (CachyOS's and Fedora's own; Discord, OYINOS, 2026-11-12)
+btrfs-progs
+mtools
+exfatprogs
+xfsprogs
+f2fs-tools
 # next to Windows: ntfsresize shrinks it, ntfscat reads whether it is hibernated
 ntfsprogs
 efibootmgr
