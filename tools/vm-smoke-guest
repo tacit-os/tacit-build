@@ -1,0 +1,208 @@
+#!/bin/bash
+# tools/vm-smoke-guest <step> [arg ...]: tools/vm-smoke's part inside the test computer, put there as
+# /var/tmp/vm-smoke-guest and run as root through the guest agent (vm run -- /bin/bash /var/tmp/vm-smoke-guest <step>).
+# What the person would run runs as the person signed in, with their desktop's environment. A check's last line is
+# "pass <check>: ..." or "fail <check>: ...".
+set -u
+step=${1:-}; shift
+state=/var/tmp/vm-smoke
+mkdir -p "$state"
+
+# The person at the desktop: the owner of the oldest process that carries the desktop's environment (one the session
+# started), and that environment, so a command runs as it would from their desktop.
+session() {
+	local pid
+	for pid in $(ps -e -o pid= --sort=start_time); do
+		[ "$(stat -c %u "/proc/$pid" 2>/dev/null || echo 0)" -ge 1000 ] || continue
+		tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -q '^HYPRLAND_INSTANCE_SIGNATURE=' || continue
+		uid=$(stat -c %u "/proc/$pid"); user=$(id -nu "$uid"); home=$(getent passwd "$user" | cut -d: -f6)
+		mapfile -d '' envs < "/proc/$pid/environ"
+		shell=$(printf '%s\n' "${envs[@]}" | sed -n 's/^TACIT_SHELL=//p')
+		return 0
+	done
+	return 1
+}
+as_person() { runuser -u "$user" -- env -i "${envs[@]}" "$@"; }
+need_session() { session || { echo "fail $1: nobody's desktop is up (no process carries HYPRLAND_INSTANCE_SIGNATURE)"; exit 1; }; }
+
+# the newest quickshell process of the person running <path> (qs ... -p <path>; Settings names its file through
+# scripts/settings/../.., so the paths are compared resolved), and its log
+qs_pid() {
+	local pid want arg
+	want=$(realpath -m "$1")
+	for pid in $(ps -u "$uid" -o pid=,comm= --sort=-start_time | awk '$2 == "qs" || $2 == "quickshell" { print $1 }'); do
+		arg=$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | tail -1)
+		[ -n "$arg" ] && [ "$(realpath -m "$arg")" = "$want" ] && { echo "$pid"; return 0; }
+	done
+	return 1
+}
+qs_log() { echo "/run/user/$uid/quickshell/by-pid/$1/log.log"; }
+# a log's warnings and errors, without their times, and with QML line:column numbers taken out, so the same error is
+# the same line before and after an update that moved it; QML errors are the ones at a .qml location
+errors() { grep -aE '\b(WARN|ERROR|CRIT|FATAL)\b' "$1" 2>/dev/null | sed -E 's/^[0-9-]+ [0-9:.]+ +//; s/(\.qml):[0-9]+(:[0-9]+)?/\1:N/g' | sort -u; }
+qml_errors() { grep -aE '\.qml:[0-9N]+' | grep -avE 'Binding loop detected' ; }
+
+# is <pid> Thyris (its browser, or a process under it)
+thyris() {
+	local p=$1 i
+	for i in $(seq 16); do
+		[ "$p" -gt 1 ] 2>/dev/null || return 1
+		case "$(readlink "/proc/$p/exe" 2>/dev/null)" in /usr/lib/tacit/thyris/*) return 0 ;; esac
+		p=$(awk '{ sub(/.*\) /, ""); print $2 }' "/proc/$p/stat" 2>/dev/null)
+	done
+	return 1
+}
+
+case "$step" in
+version)
+	pacman -Q tacit | awk '{ print $2 }'
+	;;
+up)
+	# the desktop is up after a restart: a session, and its shell running
+	session && [ -n "$shell" ] && qs_pid "$shell" >/dev/null
+	;;
+home)
+	# a home from before 1.2.14: the person's own settings file, with "Loudest allowed" at the old default 99, a pin of
+	# their own after foot, and a wallpaper of their own; kept in $state to compare with after the update
+	need_session home
+	f=$home/.config/illogical-impulse/config.json
+	[ -f "$f" ] || { echo "fail home: no settings file at $f"; exit 1; }
+	pic=$(find /usr/share/tacit /usr/share/backgrounds -type f \( -name '*.jpg' -o -name '*.png' \) 2>/dev/null | sort | head -1)
+	python3 - "$f" "$pic" "$state/home.json" <<'EOF' || { echo "fail home: the settings file could not be changed"; exit 1; }
+import json, sys
+f, pic, keep = sys.argv[1:]
+c = json.load(open(f))
+c.setdefault("audio", {}).setdefault("protection", {})["maxAllowed"] = 99
+pins = c.setdefault("dock", {}).get("pinnedApps") or ["praxis", "org.quickshell", "foot", "thyris", "graphis", "settings"]
+if "org.mozilla.firefox" not in pins:
+    pins.insert(pins.index("foot") + 1 if "foot" in pins else len(pins), "org.mozilla.firefox")
+c["dock"]["pinnedApps"] = pins
+c.setdefault("background", {})["wallpaperPath"] = pic
+json.dump(c, open(f + ".smoke", "w"), indent=2)
+json.dump(c, open(keep, "w"), indent=2)
+EOF
+	chown "$user:" "$f.smoke" && mv "$f.smoke" "$f"
+	echo "the settings file holds Loudest allowed 99, the pins $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["dock"]["pinnedApps"])' "$f"), the wallpaper ${pic:-none}"
+	;;
+shell-errors)
+	need_session shell-log
+	pid=$(qs_pid "$shell") || { echo "fail shell-log: the shell is not running"; exit 1; }
+	errors "$(qs_log "$pid")"
+	;;
+update)
+	# [tacit] pointed at the test repo on the cloud machine (the live database and this release's packages, unsigned),
+	# then what Settings' Check for updates and Restart run: the download, and the install armed for the next start
+	url=$1
+	[ -f "$state/pacman.conf" ] || cp /etc/pacman.conf "$state/pacman.conf"
+	awk -v url="$url" '/^\[/ { in_tacit = ($0 == "[tacit]") } in_tacit && /^(SigLevel|Server|Include)/ { next }
+		{ print } $0 == "[tacit]" { print "SigLevel = Optional TrustAll"; print "Server = " url }' "$state/pacman.conf" > /etc/pacman.conf
+	/usr/lib/tacit/tacit-fetch-updates now || { echo "fail update: the download failed ($?)"; exit 1; }
+	pacman -Qu tacit 2>/dev/null || { echo "fail update: no new tacit waits after the download"; exit 1; }
+	/usr/lib/tacit/tacit-update now || { echo "fail update: the install was not armed ($(tail -3 /var/lib/tacit/download.log | tr '\n' ' '))"; exit 1; }
+	echo "armed"
+	;;
+restore-pacman)
+	[ -f "$state/pacman.conf" ] && cp "$state/pacman.conf" /etc/pacman.conf
+	;;
+updated)
+	# the release came by the Restart, and the home came through it: 99 became 100, the person's pin and wallpaper stayed
+	need_session update
+	want=$1 have=$(pacman -Q tacit | awk '{ print $2 }')
+	result=$(cat /var/lib/tacit/update-result 2>/dev/null)
+	python3 - "$want" "$have" "$result" "$home/.config/illogical-impulse/config.json" "$state/home.json" <<'EOF'
+import json, sys
+want, have, result, now, before = sys.argv[1:]
+why = []
+if have.split("-")[0] != want:
+    why.append(f"tacit is {have}, not {want}")
+try:
+    r = json.loads(result)
+    if not r.get("ok"):
+        why.append(f"the install said {result.strip()}")
+except ValueError:
+    why.append("no update-result: the install at the restart did not run")
+c, b = json.load(open(now)), json.load(open(before))
+if c["audio"]["protection"]["maxAllowed"] != 100:
+    why.append(f"Loudest allowed is {c['audio']['protection']['maxAllowed']}, not 100")
+if c["background"]["wallpaperPath"] != b["background"]["wallpaperPath"]:
+    why.append(f"the wallpaper became {c['background']['wallpaperPath']!r}")
+pins = c["dock"]["pinnedApps"]
+if [p for p in b["dock"]["pinnedApps"] if p not in pins]:
+    why.append(f"pins were lost: {pins}")
+print(f"fail update: {'; '.join(why)}" if why else
+      f"pass update: tacit {have} installed at the restart; Loudest allowed 99 became 100, the wallpaper and the pins {pins} stayed")
+EOF
+	;;
+plugins)
+	need_session plugins
+	out=$(as_person hyprctl plugins list 2>&1)
+	grep -q 'tacit-frame' <<<"$out" && echo "pass plugins: Hyprland has tacit-frame loaded ($(grep -c '^Plugin' <<<"$out") plugins)" \
+		|| echo "fail plugins: hyprctl plugins list has no tacit-frame: $(tr '\n' ' ' <<<"$out" | cut -c1-300)"
+	;;
+volume-set)
+	need_session volume-100
+	as_person wpctl set-volume @DEFAULT_AUDIO_SINK@ "$1"
+	;;
+volume)
+	need_session volume-100
+	as_person wpctl get-volume @DEFAULT_AUDIO_SINK@ | awk '{ print $2 }'
+	;;
+thyris-sound)
+	# a page that plays a 440 Hz tone at load (autoplay allowed for this start, as a click would), in a Thyris of its own
+	need_session thyris-sound
+	pkill -u "$uid" -f '^/usr/lib/tacit/thyris/browser' && sleep 2
+	page=$state/tone.html
+	cat > "$page" <<'EOF'
+<!doctype html><title>tone</title><p>a 440 Hz tone<script>
+const c = new AudioContext(), o = c.createOscillator(), g = c.createGain();
+o.frequency.value = 440; g.gain.value = 0.5; o.connect(g).connect(c.destination); o.start(); c.resume();
+</script>
+EOF
+	chmod 644 "$page"
+	as_person env QTWEBENGINE_CHROMIUM_FLAGS=--autoplay-policy=no-user-gesture-required setsid thyris "file://$page" </dev/null >/dev/null 2>&1 &
+	streams="" level=0
+	for i in $(seq 30); do
+		sleep 1
+		streams=$(as_person pactl -f json list sink-inputs 2>/dev/null | python3 -c 'import json, sys
+for s in json.load(sys.stdin):
+    p = s["properties"]
+    print(p.get("application.process.id", 0), s["corked"], s["mute"], p.get("application.name", "?"))')
+		ours=$(while read -r pid corked mute name; do thyris "$pid" && [ "$corked" = False ] && [ "$mute" = False ] && echo "$name ($pid)"; done <<<"$streams")
+		[ -n "$ours" ] || continue
+		level=$(as_person timeout -s INT 0.6 parec --raw --latency-msec=20 --format=s16le --channels=1 --rate=16000 -d @DEFAULT_MONITOR@ 2>/dev/null \
+			| python3 -c 'import array, sys; a = array.array("h", sys.stdin.buffer.read()); print(round(max(map(abs, a), default=0) / 32768, 3))')
+		break
+	done
+	pkill -u "$uid" -f '^/usr/lib/tacit/thyris/browser'
+	if [ -n "${ours:-}" ] && python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) > 0.05 else 1)' "$level"; then
+		echo "pass thyris-sound: a playback stream from Thyris, $ours, and the speaker's loudest sample $level"
+	else
+		if [ -n "${ours:-}" ]; then echo "fail thyris-sound: the stream $ours plays, but the speaker's loudest sample is $level"
+		else echo "fail thyris-sound: no playing stream from Thyris; the streams: $(tr '\n' ';' <<<"$streams")"; fi
+	fi
+	;;
+apps)
+	# Settings, Praxis and Files started as the dock starts them; their logs read 10 s later (Files is the shell's own)
+	need_session apps-qml
+	shellpid=$(qs_pid "$shell") || { echo "fail apps-qml: the shell is not running"; exit 1; }
+	shelllog=$(qs_log "$shellpid"); seen=$(wc -l < "$shelllog")
+	as_person settings-open </dev/null >/dev/null 2>&1 &
+	as_person tacit-app ensure praxis </dev/null >/dev/null 2>&1 &
+	as_person files-open </dev/null >/dev/null 2>&1 &
+	sleep 10
+	why=()
+	for app in tacit-settings.qml:Settings claude.qml:Praxis; do
+		pid=$(qs_pid "$shell/${app%%:*}") || { why+=("${app#*:} is not running"); continue; }
+		bad=$(errors "$(qs_log "$pid")" | qml_errors)
+		[ -z "$bad" ] || why+=("${app#*:}: $(head -3 <<<"$bad" | tr '\n' ' ')")
+	done
+	bad=$(tail -n +"$((seen + 1))" "$shelllog" > "$state/files.log"; errors "$state/files.log" | qml_errors)
+	[ -z "$bad" ] || why+=("Files (the shell's log): $(head -3 <<<"$bad" | tr '\n' ' ')")
+	if [ ${#why[@]} = 0 ]; then echo "pass apps-qml: Settings, Praxis and Files started with no QML error in their logs"
+	else echo "fail apps-qml: $(printf '%s; ' "${why[@]}")"; fi
+	;;
+*)
+	echo "vm-smoke-guest: no step $step" >&2
+	exit 2
+	;;
+esac

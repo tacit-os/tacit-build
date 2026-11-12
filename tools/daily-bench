@@ -1,0 +1,1125 @@
+#!/usr/bin/env python3
+"""tools/daily-bench <version> [--soak 8h] [--compare <version>] [--suite <name> ...] [--runs N]
+tools/daily-bench <version> --report [--compare <version>]
+
+Tacit Daily: whether Tacit is fit to use every day, measured the same way on every release in the test VM on the cloud
+machine (cef-build-x64), through its guest agent (tools/vm run), as tools/vm-smoke is. The VM must be running a disk
+with <version> installed, booted with this checkout's tools/vm (vm disk). It only reports for now (the owner,
+2026-11-12): after 2-3 releases have set the normal spread it joins the release gate, with margins.
+
+  the short run (every release; 25-30 minutes with --runs 3, a third of it the 10 minutes at rest): each daily task
+      --runs times, the speed of starting, searching and loading, the memory, processor and wakeups at rest, the space
+      caches take, and what went wrong on the way
+  --soak 8h (before each weekly release): the tasks over and over for that long, to catch leaks and slow decay, then
+      an update from a test repo through Settings' Restart
+  --suite creator|office|developer|gamer|everyday|all: the workflow suites too, one per kind of person who uses Tacit
+      (round2/BRIEF-DAILY-BENCH-WORKFLOWS.md); apps they need are got through Apps on the VM
+  --report: the scorecard written again from the record, the VM untouched
+
+The test account's password (for the sign-in, the lock, a sleep's wake and a restart) is read from TACIT_VM_PASSWORD
+here, or ~/tacit-vm/password on the cloud machine; without it those parts are not run, and the scorecard says so.
+TACIT_VM_KEYS=de|gb when the VM types German or British.
+
+Written to out/x86_64/: daily-<version>.json (every number and check), daily-<version>.md (the scorecard, with the
+comparison against the release before); a second run of the same version is daily-<version>.2.*, and pairs of runs
+of one version measure the spread the margins start from. --soak writes daily-<version>-soak.*.
+"""
+import json, os, re, shutil, subprocess, sys, tarfile, tempfile, time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PROJECT, ZONE, MACHINE = "YOUR-PROJECT", "europe-west4-a", "cef-build-x64"
+GUEST = "/var/tmp/daily/daily-bench-guest"
+
+# ---------------------------------------------------------------- what is measured, in the owner's words
+
+TASKS = {
+    "sound": "Sound plays from Thyris",
+    "wallpaper": "A wallpaper change shows",
+    "files-preview": "Files previews a picture and a PDF",
+    "lock": "Lock and unlock",
+    "sleep": "Sleep and wake",
+    "update-check": "Updates: a check for updates",
+    "update": "Updates: an update from a test repo, through Restart",
+    "search": "Search finds an app and starts it",
+    "notch": "The notch opens and closes, with Esc and with a click outside",
+    "praxis": "Praxis opens a session",
+}
+APP_WORDS = {"settings": "Settings", "files": "Files", "thyris": "Thyris", "praxis": "Praxis", "graphis": "Graphis",
+             "viewer": "Viewer", "shell": "The shell", "hyprland": "Hyprland", "agent-host": "Praxis's agent host"}
+HARDWARE_ONLY = ["Wi-Fi", "the touchpad (gestures, a pinch)", "the camera", "the microphone heard", "real sleep (a lid)",
+                 "the battery"]
+
+# The suites: (id, mark, core, words, needs). VM runs in the VM, VM-network needs its internet (no account); ACCOUNT and
+# HARDWARE steps are never run here and never passed here: a tester runs them (HARDWARE-DAILY.md, tools/hardware-daily).
+SUITES = {
+    "creator": ("Can a streamer use it?", [
+        ("obs-install", "VM-network", True, "OBS Studio got from Apps", None),
+        ("record-unfocused", "VM", True, "OBS records a window while another has the focus, as bright as in focus", "obs-install"),
+        ("youtube", "VM-network", False, "a 10-minute YouTube video plays, with sound, few frames dropped", None),
+        ("upload", "VM", False, "a file sent through a web page's file picker", None),
+        ("download", "VM", False, "a file downloaded from a web page", None),
+        ("find-audio", "VM", True, "a downloaded voice note found by part of its name in search, and played", None),
+        ("stream", "ACCOUNT", False, "a YouTube stream from OBS (a stream key)", None),
+        ("whatsapp", "ACCOUNT", False, "WhatsApp Business on the web: a voice note received, found and played", None),
+        ("sheets-topup", "ACCOUNT", False, "an online spreadsheet edited, a top-up website paid on", None),
+        ("bt-speaker", "HARDWARE", False, "YouTube heard over a Bluetooth speaker", None),
+    ]),
+    "office": ("Can a student or an office worker use it?", [
+        ("lo-install", "VM-network", True, "LibreOffice got from Apps", None),
+        ("docx", "VM", True, "a .docx edited, saved and opened again, the text kept", "lo-install"),
+        ("xlsx", "VM", True, "an .xlsx edited, saved and opened again, the cell kept", "lo-install"),
+        ("pptx", "VM", True, "a .pptx edited, saved and opened again, the slide kept", "lo-install"),
+        ("pdf", "VM", True, "a PDF read in Viewer, page to page", None),
+        ("call", "VM", True, "a WebRTC call in Thyris: the microphone and a screen share arrive", None),
+        ("zoom", "VM", False, "a page zoomed with Ctrl+scroll", None),
+        ("camera", "HARDWARE", False, "the camera in a call", None),
+        ("mic-heard", "HARDWARE", False, "the other side hears the microphone", None),
+        ("pinch", "HARDWARE", False, "a page zoomed with a pinch", None),
+    ]),
+    "developer": ("Can a developer use it?", [
+        ("vscode-install", "VM-network", True, "VS Code (Code) got from Apps", None),
+        ("zed-install", "VM-network", False, "Zed got from Apps", None),
+        ("vscode-folder", "VM", True, "a folder opened from Files in Code", "vscode-install"),
+        ("zed-folder", "VM", False, "a folder opened from Files in Zed", "zed-install"),
+        ("terminal", "VM", True, "in the terminal: git clone, a build, its tests", None),
+        ("vscode-theme", "VM", False, "Code wears Tacit's colours", "vscode-install"),
+        ("zed-theme", "VM", False, "Zed wears Tacit's colours", "zed-install"),
+        ("web-ide", "VM", False, "typing in a web IDE page in Thyris keeps up", None),
+    ]),
+    "gamer": ("Can a gamer use it?", [
+        ("steam-install", "VM-network", True, "Steam got from Apps", None),
+        ("steam-starts", "VM", True, "Steam starts", "steam-install"),
+        ("discord-install", "VM-network", False, "Discord got from Apps", None),
+        ("discord-background", "VM", False, "Discord keeps running in the background, and Activity shows it", "discord-install"),
+        ("fullscreen", "VM", True, "a fullscreen window left with Alt+Tab comes back fullscreen", None),
+        ("proton", "HARDWARE", False, "a Proton game: frame rate and frame times over 2 minutes (and the Steam sign-in)", None),
+        ("discord-share", "ACCOUNT", False, "Discord: a call with a screen share", None),
+    ]),
+    "everyday": ("Can anyone use it every day?", [
+        ("notify", "VM", True, "a messaging page's notification shows (a stand-in for WhatsApp Web and Discord)", None),
+        ("screenshot", "VM", True, "a screenshot saved and on the clipboard", None),
+        ("clipboard", "VM", True, "text copied from one place and pasted in another", None),
+        ("emoji", "VM", False, "an emoji from the emoji picker", None),
+        ("update-restart", "VM", True, "an update, then Restart", None),
+        ("sleep-video", "VM", True, "a sleep with a video paused, then the wake: still paused, plays again", None),
+        ("messaging", "ACCOUNT", False, "WhatsApp Web and Discord: signed in, a message's notification arrives", None),
+        ("wifi", "HARDWARE", False, "Wi-Fi: a network joined, and kept after a sleep", None),
+        ("bt-audio", "HARDWARE", False, "Bluetooth headphones: paired, sound plays", None),
+    ]),
+}
+
+HW_WORDS = {"battery_idle": "The battery at rest", "battery_video": "The battery playing a video",
+            "microphone_level": "The microphone's loudest sample, speaking", "proton": "A Proton game",
+            "daily.sleep": "Real sleep (the lid)", "daily.touchpad": "The touchpad", "daily.microphone": "The microphone"}
+
+# Provisional margins (the owner, 2026-11-12: until a baseline exists): a change in a median past
+# max(relative x the earlier median, the floor) is flagged; pairs of runs of one release widen them (see margins()).
+MARGINS = {"ms": (0.20, 50), "s": (0.15, 2.0), "MB": (0.10, 10), "MB/h": (0.0, 5), "%": (0.50, 0.5), "/s": (0.30, 20),
+           "% dropped": (0.0, 2.0)}
+
+
+def stats(v):
+    v = sorted(x for x in v if isinstance(x, (int, float)))
+    if not v:
+        return None
+    n = len(v)
+    med = v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2
+    return {"median": round(med, 2), "low": v[0], "high": v[-1], "n": n}
+
+
+# ---------------------------------------------------------------- the run, on the cloud machine
+
+class Bench:
+    def __init__(self, version, soak, runs, suites):
+        self.vmcmd = os.path.expanduser("~/tacit-vm/vm")
+        pw = os.path.expanduser("~/tacit-vm/password")
+        self.pw = open(pw).read().rstrip("\n") if os.path.exists(pw) else ""
+        keys = os.environ.get("TACIT_VM_KEYS", "")
+        self.typeflag = [f"--{keys}"] if keys in ("de", "gb") else []
+        self.t0 = time.time()
+        self.n = 0
+        self.rec = {"bench": "tacit-daily", "format": 1, "version": version, "mode": "soak" if soak else "short",
+                    "soak_s": soak, "runs": runs, "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    "provisional": True, "kvm": os.path.exists("/dev/kvm"), "metrics": {}, "tasks": {},
+                    "suites": {}, "reliability": {}, "not_run": [], "hardware_only": HARDWARE_ONLY}
+        self.suites = suites
+
+    # -- the VM
+    def vm(self, *args, timeout=60):
+        try:
+            p = subprocess.run([self.vmcmd, *map(str, args)], capture_output=True, text=True, timeout=timeout)
+            return p.returncode, p.stdout, p.stderr
+        except subprocess.TimeoutExpired:
+            return 124, "", "timed out"
+
+    def guest(self, *args, timeout=120):
+        code, o, e = self.vm("run", "--timeout", timeout, "--", "/usr/bin/python3", "-I", GUEST, *args, timeout=timeout + 60)
+        for line in reversed(o.splitlines()):
+            if line.startswith("{"):
+                try:
+                    return json.loads(line)
+                except ValueError:
+                    break
+        return {"ok": False, "why": f"no answer from the test computer: {(o + e).strip()[-300:] or code}"}
+
+    def key(self, *names):
+        self.vm("key", *names)
+
+    def type(self, text):
+        self.vm("type", *self.typeflag, text)
+
+    def log(self, *a):
+        print(f"[{(time.time() - self.t0) / 60:5.1f} min]", *a, flush=True)
+
+    # -- the record
+    def metric(self, name, section, unit, words, value):
+        if value is None:
+            return
+        m = self.rec["metrics"].setdefault(name, {"section": section, "unit": unit, "words": words, "samples": [], "at": []})
+        m["samples"].append(round(value, 2))
+        m["at"].append(round((time.time() - self.t0) / 60, 1))
+
+    def task(self, name, r):
+        t = self.rec["tasks"].setdefault(name, {"words": TASKS[name], "runs": 0, "passed": 0, "why": []})
+        t["runs"] += 1
+        if r.get("ok"):
+            t["passed"] += 1
+        else:
+            t["why"].append(r.get("why") or "failed")
+        self.log(f"{name}: {'pass' if r.get('ok') else 'FAIL ' + str(r.get('why'))}")
+        return r.get("ok")
+
+    def not_run(self, what, why):
+        if not any(x["what"] == what for x in self.rec["not_run"]):
+            self.rec["not_run"].append({"what": what, "why": why})
+
+    def save(self, path="daily.json"):
+        self.rec["minutes"] = round((time.time() - self.t0) / 60, 1)
+        json.dump(self.rec, open(path + ".tmp", "w"), indent=1)
+        os.replace(path + ".tmp", path)
+
+    def settle(self, task):
+        s = self.guest("settle", task)
+        for kind in ("layers", "windows"):
+            for x in s.get(kind) or []:
+                self.rec["reliability"].setdefault("stuck", []).append(f"after {task}: {x}")
+
+    # -- presses timed in the VM
+    def press(self, spec, act, limit=30):
+        self.n += 1
+        ident = f"{spec}-{self.n}"
+        a = self.guest("arm", spec, ident)
+        if not a.get("ok"):
+            return {"ok": False, "why": f"the key listener did not start: {a.get('why')}"}
+        act()
+        return self.guest("result", ident, limit, timeout=limit + 30)
+
+    # -- the parts of a run
+    def preflight(self):
+        code, o, e = self.vm("agent", timeout=20)
+        if code:
+            sys.exit("daily-bench: the test computer's guest agent does not answer. Once per test disk: start it with this "
+                     "checkout's tools/vm (vm disk), sign in, and in a terminal there: sudo pacman -S qemu-guest-agent, then "
+                     "sudo systemctl start qemu-guest-agent (tools/vm-smoke says the same).")
+        for name in ("daily-bench-guest", "daily-bench-suites", "vm-smoke-guest"):
+            self.vm("run", "--stdin", name, "--", "/bin/sh", "-c", f"mkdir -p /var/tmp/daily && cat > /var/tmp/daily/{name}")
+        p = self.guest("preflight", self.rec["version"])
+        self.rec["tacit"], self.rec["hyprland"] = p.get("tacit"), p.get("hyprland")
+        if not p.get("ok"):
+            self.rec["error"] = p.get("why")
+            self.save()
+            sys.exit(f"daily-bench: {p.get('why')}")
+        self.guest("sampler", "start")
+        self.memory0 = self.guest("memory").get("pss", {})
+        self.rec["disk_start"] = self.guest("disk")
+        if not self.pw:
+            for what in ("the start and the sign-in", "lock and unlock", "sleep and wake", "the update through Restart"):
+                self.not_run(what, "no password for the test account (TACIT_VM_PASSWORD, or ~/tacit-vm/password on the cloud machine)")
+
+    def app_starts(self, rounds):
+        for app in ("settings", "files", "thyris", "praxis", "graphis", "viewer"):
+            for _ in range(rounds):
+                for kind in ("cold", "warm"):
+                    r = self.guest("start", app, kind, timeout=120)
+                    self.metric(f"start.{app}.{kind}", "speed", "ms", f"{APP_WORDS[app]}, {kind} start", r.get("answers_ms"))
+                    if not r.get("ok"):
+                        self.rec["reliability"].setdefault("start_failures", []).append(f"{app} ({kind}): {r.get('why')}")
+            self.guest("quit", app)
+            self.settle(f"{app}'s starts")
+
+    def page_load(self, runs):
+        r = self.guest("page-load", runs, timeout=300)
+        for row in r.get("runs") or []:
+            for k, words in (("load", "a page load in Thyris, to its load event"), ("fcp", "a page load in Thyris, to its first paint")):
+                self.metric(f"page.{k}", "speed", "ms", words, row.get(k) or None)
+        if not r.get("ok"):
+            self.rec["reliability"].setdefault("start_failures", []).append(f"page load: {r.get('why')}")
+        self.guest("quit", "thyris")
+
+    def search(self):
+        self.guest("quit", "graphis")
+        r = self.press("search", lambda: self.key("meta_l"))
+        self.metric("search.shown", "speed", "ms", "Search, from the key to shown", r.get("ms"))
+        if not r.get("ok"):
+            self.key("esc")
+            return self.task("search", {"ok": False, "why": f"search did not show: {r.get('why')}"})
+        time.sleep(0.5)
+        self.type("graphis")
+        time.sleep(1)
+        self.key("ret")
+        up = self.guest("up", "graphis", 30, timeout=60)
+        self.guest("quit", "graphis")
+        self.settle("search")
+        return self.task("search", up if up.get("ok") else {"ok": False, "why": f"Enter on \"graphis\" in search: {up.get('why')}"})
+
+    def notch(self):
+        why = []
+        for spec, act in (("notch-open", lambda: self.key("meta_l", "spc")), ("notch-esc", lambda: self.key("esc")),
+                          ("notch-open", lambda: self.key("meta_l", "spc")), ("notch-click", lambda: self.vm("click", 960, 900))):
+            r = self.press(spec, act)
+            if spec == "notch-open":
+                self.metric("notch.shown", "speed", "ms", "The notch, from the key to shown", r.get("ms"))
+            if not r.get("ok"):
+                why.append(f"{spec}: {r.get('why')}")
+                if spec == "notch-open":
+                    break
+        self.key("esc")
+        self.settle("notch")
+        return self.task("notch", {"ok": not why, "why": "; ".join(why)})
+
+    def unlock(self):
+        """the password typed into the lock and Enter: unlocked, the shell answering"""
+        r = self.press("enter-unlocked", lambda: (self.type(self.pw), self.key("ret")), 40)
+        if not r.get("ok"):      # typing into the VM can drop a key: once more
+            self.key("esc")
+            r = self.press("enter-unlocked", lambda: (self.type(self.pw), self.key("ret")), 40)
+        return r
+
+    def lock(self):
+        r = self.press("lock", lambda: self.key("meta_l", "l"))
+        if not r.get("ok"):
+            return self.task("lock", {"ok": False, "why": f"Super+L did not lock: {r.get('why')}"})
+        u = self.unlock()
+        self.metric("unlock", "speed", "ms", "Unlock, from Enter to the desktop answering", u.get("ms"))
+        self.settle("lock")
+        return self.task("lock", u if u.get("ok") else {"ok": False, "why": f"the password did not unlock it: {u.get('why')}"})
+
+    def sleep_wake(self, task="sleep", measure=True):
+        """systemctl suspend; QEMU says it sleeps; QMP's system_wakeup; the desktop answers again, through the lock"""
+        self.guest("suspend")
+        asleep = False
+        for _ in range(60):
+            time.sleep(1)
+            if self.vm("status")[1].strip() == "suspended":
+                asleep = True
+                break
+        if not asleep:
+            r = {"ok": False, "why": "the VM never went to sleep (QEMU did not say suspended)"}
+            return self.task(task, r) if task in TASKS else r
+        time.sleep(5)
+        t = time.time()
+        self.vm("wake")
+        while time.time() < t + 120 and self.vm("agent", timeout=10)[0]:
+            time.sleep(0.5)
+        if measure:
+            self.metric("wake.agent", "speed", "s", "Wake, until the system answers", time.time() - t)
+        d = self.guest("desktop")
+        if d.get("locked"):
+            u = self.unlock()
+            d = self.guest("desktop") if u.get("ok") else {"ok": False, "why": f"after the wake the password did not unlock it: {u.get('why')}"}
+        if measure:
+            self.metric("wake.desktop", "speed", "s", "Wake, until the desktop answers (through the lock)", time.time() - t if d.get("ok") else None)
+        r = d if d.get("ok") else {"ok": False, "why": f"after the wake: {d.get('why')}"}
+        self.settle("sleep")
+        return self.task(task, r) if task in TASKS else r
+
+    def boot(self):
+        """off, power on (vm disk), to the sign-in screen and through it to a desktop that answers"""
+        self.vm("run", "--timeout", 15, "--", "systemctl", "poweroff", timeout=40)
+        off = False
+        for _ in range(120):
+            time.sleep(1)
+            if self.vm("status")[0]:
+                off = True
+                break
+        if not off:
+            self.rec["reliability"].setdefault("stuck", []).append("the VM did not power off within 2 minutes: switched off")
+            self.vm("stop")
+            time.sleep(3)
+        t0 = time.time()
+        if self.vm("disk", timeout=120)[0]:
+            sys.exit("daily-bench: the VM did not start again (vm disk)")
+        return self.through_boot_lock(t0)
+
+    def through_boot_lock(self, t0, measure=True):
+        """from the power on (t0) to the sign-in screen, the password typed, to a desktop that answers; measured only for
+        a power on (a restart's t0 is when the system went down, not when the firmware started)"""
+        pre = None
+        while time.time() < t0 + 600:
+            t = time.time()
+            if not self.vm("agent", timeout=10)[0]:
+                st = self.guest("boot-state")
+                if "uptime" in st:
+                    if pre is None:
+                        pre = t - t0 - st["uptime"]     # firmware and boot loader: before the kernel's clock starts
+                    if st.get("bootlock") and st["bootlock"].get("at") is not None:
+                        break
+            time.sleep(1)
+        else:
+            return {"ok": False, "why": "no sign-in screen within 10 minutes of the power on"}
+        if measure:
+            self.metric("boot.sign_in", "speed", "s", "Power on to the sign-in screen", pre + st["bootlock"]["at"])
+        u = self.press("enter-usable", lambda: (self.type(self.pw), self.key("ret")), 120)
+        if not u.get("ok"):
+            self.key("esc")
+            u = self.press("enter-usable", lambda: (self.type(self.pw), self.key("ret")), 120)
+        if measure:
+            self.metric("boot.desktop", "speed", "ms", "Sign-in to a desktop that answers", u.get("ms"))
+        self.guest("wait", 20)
+        self.guest("sampler", "start")
+        if self.suites:
+            self.guest("serve", "start")
+        return u
+
+    def update(self, n, task="update"):
+        """the soak's update: a new version of a probe package in a test repo, got as Settings gets it, installed at
+        the restart Restart asks for, through the boot lock"""
+        r = self.guest("probe-repo", n, timeout=300)
+        if r.get("ok"):
+            r = self.guest("update-arm", timeout=1800)
+        if r.get("ok"):
+            self.vm("run", "--timeout", 10, "--", "systemctl", "reboot", timeout=40)
+            for _ in range(120):
+                if self.vm("agent", timeout=10)[0]:
+                    break
+                time.sleep(2)
+            r = self.through_boot_lock(time.time(), measure=False)
+            if r.get("ok"):
+                r = self.guest("update-done", n)
+        self.guest("probe-clean", timeout=300)
+        return self.task(task, r) if task in TASKS else r
+
+    def round(self, i):
+        self.task("sound", self.guest("sound", timeout=180))
+        r = self.guest("wallpaper", timeout=120)
+        self.metric("wallpaper.shown", "speed", "ms", "A wallpaper change, until the desktop shows it", r.get("shown_ms"))
+        self.task("wallpaper", r)
+        self.settle("wallpaper")
+        r = self.guest("files-preview", timeout=120)
+        self.task("files-preview", r)
+        self.settle("files-preview")
+        self.search()
+        self.notch()
+        r = self.guest("praxis", timeout=120)
+        self.metric("praxis.list", "speed", "ms", "Praxis, from its start to its session list", r.get("list_ms"))
+        self.task("praxis", r)
+        self.guest("quit", "praxis")
+        self.settle("praxis")
+        r = self.guest("update-check", timeout=1000)
+        self.metric("update.check", "speed", "s", "A check for updates", r.get("seconds"))
+        self.task("update-check", r)
+        if self.pw:
+            self.lock()
+            self.sleep_wake()
+
+    def idle(self, total=600, windows=5, window=60, samples=3):
+        o = self.guest("open-all", timeout=400)
+        if not o.get("ok"):
+            self.rec["reliability"].setdefault("start_failures", []).append(f"before the rest: {o.get('why')}")
+        r = self.guest("idle", total, windows, window, samples, timeout=total + 200)
+        for k, v in (r.get("pss") or {}).items():
+            for x in v:
+                self.metric(f"pss.{k}", "lightness", "MB", f"{APP_WORDS.get(k, k)}: memory after {total // 60} minutes at rest", x)
+        for k, v in (r.get("cpu") or {}).items():
+            for x in v:
+                self.metric(f"cpu.{k}", "lightness", "%", f"{APP_WORDS.get(k, k)}: processor at rest", x)
+        for k, v in (r.get("wakeups") or {}).items():
+            for x in v:
+                self.metric(f"wakeups.{k}", "lightness", "/s", f"{APP_WORDS.get(k, k)}: wakeups at rest", x)
+        for x in r.get("system_cpu") or []:
+            self.metric("cpu.all", "lightness", "%", "Everything: processor at rest", x)
+        self.guest("close-all", timeout=200)
+
+    def growth(self, before, after, hours=None):
+        for k, b in before.items():
+            a = after.get(k)
+            if a and a.get("pid") == b.get("pid"):
+                if hours:
+                    self.metric(f"growth.{k}", "lightness", "MB/h", f"{APP_WORDS.get(k, k)}: memory growth an hour", (a["mb"] - b["mb"]) / hours)
+                else:
+                    self.metric(f"growth.{k}", "lightness", "MB", f"{APP_WORDS.get(k, k)}: memory growth over the run", a["mb"] - b["mb"])
+
+    def reliability(self):
+        r = self.guest("reliability", timeout=300)
+        rel = self.rec["reliability"]
+        for k in ("crashes", "qml", "warnings", "not_answering"):
+            have = rel.setdefault(k, [])
+            have += [x for x in r.get(k) or [] if x not in have]
+        j = rel.setdefault("journal", {})
+        for k, v in (r.get("journal") or {}).items():
+            j[k] = max(j.get(k, 0), v)
+
+    def disk(self):
+        d = self.guest("disk")
+        for k, v in (d.get("mb") or {}).items():
+            self.metric(f"disk.{k}", "lightness", "MB", f"Disk: {k}", v)
+        self.rec["disk_end"] = d
+
+    # -- the workflow suites
+    def install(self, app):
+        r = self.guest("apps-install", app)
+        typed, end = 0, time.time() + 2400
+        while r.get("ok") is not False and time.time() < end:
+            time.sleep(5)
+            r = self.guest("apps-wait", app)
+            if r.get("done"):
+                return r
+            if r.get("password") and typed < 2:
+                if not self.pw:
+                    return {"ok": False, "why": "Apps asks for the password (pacman), and the run has none"}
+                self.type(self.pw)
+                self.key("ret")
+                typed += 1
+        return {"ok": False, "why": r.get("why") or "Apps did not finish within 40 minutes"}
+
+    def suite(self, name):
+        title, steps = SUITES[name]
+        rec = self.rec["suites"].setdefault(name, {"title": title, "steps": {}})
+        self.guest("serve", "start")
+        for sid, mark, core, words, needs in steps:
+            s = {"mark": mark, "core": core, "words": words}
+            rec["steps"][sid] = s
+            if mark in ("ACCOUNT", "HARDWARE"):
+                s["status"] = "needs a tester"
+                continue
+            if needs and rec["steps"].get(needs, {}).get("status") != "passed":
+                s.update(status="not run", why=f"needs \"{rec['steps'][needs]['words']}\" first")
+                continue
+            if sid in PASSWORD_STEPS and not self.pw:
+                s.update(status="not run", why="no password for the test account")
+                continue
+            try:
+                r = getattr(self, "s_" + name + "_" + sid.replace("-", "_"))()
+            except Exception as e:          # one step's surprise must not end the run: it is that step's failure
+                r = {"ok": False, "why": f"the run's own error: {e!r}"}
+            s["status"] = "passed" if r.get("ok") else "failed"
+            if not r.get("ok"):
+                s["why"] = r.get("why") or "failed"
+            s["detail"] = {k: v for k, v in r.items() if k not in ("ok", "why")}
+            self.log(f"{name}.{sid}: {s['status']} {s.get('why') or ''}")
+            self.settle(f"{name}: {sid}")
+            self.save()
+
+    def s_creator_obs_install(self):
+        return self.install("obs")
+
+    def s_creator_record_unfocused(self):
+        return self.guest("creator-record", 60, timeout=900)
+
+    def s_creator_youtube(self):
+        r = self.guest("creator-youtube", 600, timeout=1200)
+        self.metric("creator.youtube_dropped", "lightness", "% dropped", "YouTube: frames dropped", r.get("dropped_pct"))
+        self.metric("creator.youtube_cpu", "lightness", "%", "YouTube: Thyris's processor", r.get("cpu_pct"))
+        return r
+
+    def s_creator_upload(self):
+        r = self.guest("creator-upload-start", timeout=120)
+        if not r.get("ok"):
+            return r
+        time.sleep(2)
+        self.type("tacit-daily-upload-4711")      # a picker is searched by typing (Files' pick mode)
+        time.sleep(2)
+        self.key("ret")
+        return self.guest("creator-upload-done")
+
+    def s_creator_download(self):
+        r = self.guest("creator-download", "click", timeout=120)
+        if r.get("save_dialog"):
+            self.key("ret")
+            r = self.guest("creator-download", "wait", timeout=120)
+        return r
+
+    def s_creator_find_audio(self):
+        self.guest("creator-audio-place")
+        self.key("meta_l")
+        time.sleep(1)
+        self.type("voice-4711")
+        time.sleep(2)
+        self.key("ret")
+        r = self.guest("creator-audio-playing", timeout=60)
+        self.key("esc")
+        return r
+
+    def s_office_lo_install(self):
+        r = self.install("libreoffice")
+        if r.get("ok"):
+            m = self.guest("office-make", timeout=600)
+            if not m.get("ok"):
+                return {"ok": False, "why": f"got, but {m.get('why')}"}
+        return r
+
+    def office(self, kind, keys):
+        o = self.guest("office-open", kind, timeout=150)
+        if not o.get("ok"):
+            return o
+        for k in keys:
+            self.type(k[5:]) if k.startswith("type:") else self.key(*k.split())
+            time.sleep(0.4)
+        s = self.guest("office-saved", kind, o.get("mtime", 0), timeout=90)
+        if not s.get("ok"):
+            return s
+        return self.guest("office-reopen", kind, timeout=150)
+
+    def s_office_docx(self):
+        return self.office("docx", ["ctrl end", "type: Daily4711", "ctrl s"])
+
+    def s_office_xlsx(self):
+        return self.office("xlsx", ["ctrl home", "down", "type:Daily4711", "ret", "ctrl s"])
+
+    def s_office_pptx(self):
+        return self.office("pptx", ["tab", "f2", "ctrl end", "type: Daily4711", "esc", "esc", "ctrl s"])
+
+    def s_office_pdf(self):
+        r = self.guest("office-viewer", 1, timeout=60)
+        if not r.get("ok"):
+            return r
+        self.key("pgdn")
+        return self.guest("office-viewer", 2, timeout=60)
+
+    def s_office_call(self):
+        return self.guest("office-call", timeout=180)
+
+    def s_office_zoom(self):
+        b = self.guest("office-zoom", "before", timeout=90)
+        if not b.get("ok"):
+            return b
+        self.vm("scroll", "--ctrl", b["x"], b["y"], -3)
+        time.sleep(1)
+        a = self.guest("office-zoom", "after", timeout=60)
+        ok = bool(a.get("ratio") and b.get("ratio") and a["ratio"] > b["ratio"] * 1.05)
+        return {"ok": ok, "before": b.get("ratio"), "after": a.get("ratio"),
+                "why": None if ok else f"Ctrl+scroll did not zoom the page ({b.get('ratio')} to {a.get('ratio')})"}
+
+    def s_developer_vscode_install(self):
+        return self.install("vscode")
+
+    def s_developer_zed_install(self):
+        return self.install("zed")
+
+    def s_developer_vscode_folder(self):
+        return self.guest("dev-open-folder", "vscode", timeout=150)
+
+    def s_developer_zed_folder(self):
+        return self.guest("dev-open-folder", "zed", timeout=150)
+
+    def s_developer_terminal(self):
+        return self.guest("dev-terminal", timeout=200)
+
+    def s_developer_vscode_theme(self):
+        return self.guest("dev-theme", "vscode")
+
+    def s_developer_zed_theme(self):
+        return self.guest("dev-theme", "zed")
+
+    def s_developer_web_ide(self):
+        r = self.guest("dev-ide", "start", timeout=120)
+        if not r.get("ok"):
+            return r
+        time.sleep(1)
+        self.type("const tacit = daily")
+        r = self.guest("dev-ide", "result", timeout=90)
+        for x in r.get("latency_ms") or []:
+            self.metric("developer.web_ide_key", "speed", "ms", "A web IDE in Thyris, from a key to it drawn", x)
+        return r
+
+    def s_gamer_steam_install(self):
+        return self.install("steam")
+
+    def s_gamer_steam_starts(self):
+        return self.guest("gamer-steam", timeout=400)
+
+    def s_gamer_discord_install(self):
+        return self.install("discord")
+
+    def s_gamer_discord_background(self):
+        return self.guest("gamer-discord", timeout=200)
+
+    def s_gamer_fullscreen(self):
+        r = self.guest("gamer-fullscreen", "start", timeout=120)
+        for keys, step in ((["f11"], "full"), (["alt", "tab"], "away"), (["alt", "tab"], "back")):
+            if not r.get("ok"):
+                break
+            self.key(*keys)
+            time.sleep(1.5)
+            r = self.guest("gamer-fullscreen", step, timeout=60)
+        return r
+
+    def s_everyday_notify(self):
+        return self.guest("everyday-notify", timeout=90)
+
+    def s_everyday_screenshot(self):
+        self.guest("everyday-screenshot", "before")
+        self.key("ctrl", "print")
+        return self.guest("everyday-screenshot", "after")
+
+    def s_everyday_clipboard(self):
+        r = self.guest("everyday-clipboard", "start", timeout=90)
+        if r.get("ok"):
+            self.key("ctrl", "c")
+            time.sleep(0.5)
+            r = self.guest("everyday-clipboard", "copied")
+        if r.get("ok"):
+            self.key("ctrl", "v")
+            time.sleep(0.5)
+            r = self.guest("everyday-clipboard", "pasted")
+        return r
+
+    def s_everyday_emoji(self):
+        self.key("meta_l", "dot")
+        time.sleep(1.5)
+        self.type("grinning")
+        time.sleep(1.5)
+        self.key("ret")
+        r = self.guest("everyday-emoji")
+        self.key("esc")
+        return r
+
+    def s_everyday_update_restart(self):
+        return self.update(2, task="everyday")
+
+    def s_everyday_sleep_video(self):
+        r = self.guest("everyday-video", "start", timeout=90)
+        if not r.get("ok"):
+            return r
+        w = self.sleep_wake(task="everyday", measure=False)
+        if not w.get("ok"):
+            return w
+        return self.guest("everyday-video", "after", timeout=60)
+
+    # -- the two modes
+    def short(self, runs):
+        self.preflight()
+        self.log("app starts")
+        self.app_starts(runs)
+        self.page_load(5)
+        for i in range(runs):
+            self.log(f"tasks, round {i + 1} of {runs}")
+            self.round(i)
+            self.save()
+        self.log("10 minutes at rest")
+        self.idle()
+        self.growth(self.memory0, self.guest("memory").get("pss", {}))
+        self.reliability()
+        self.disk()
+        self.save()
+        for name in self.suites:
+            self.log(f"suite {name}")
+            self.suite(name)
+        self.reliability()
+        if self.pw:
+            for i in range(runs):
+                self.log(f"start {i + 1} of {runs}")
+                self.boot()
+                self.save()
+            self.reliability()
+        self.finish()
+
+    def soak(self, seconds, runs):
+        self.preflight()
+        start, hours = time.time(), seconds / 3600
+        reserve = min(1500, seconds * 0.05)        # the last part: 10 minutes at rest, the update and its restart
+        every = seconds / 8                         # "hourly" over an 8-hour soak
+        last_sample, i = 0.0, 0
+        mem0 = self.memory0
+        while time.time() < start + seconds - reserve:
+            i += 1
+            self.log(f"soak round {i}")
+            self.app_starts(1)
+            self.page_load(2)
+            self.round(i)
+            if time.time() - last_sample >= every:
+                last_sample = time.time()
+                m = self.guest("memory").get("pss", {})
+                for k, v in m.items():
+                    self.metric(f"soak.pss.{k}", "lightness", "MB", f"{APP_WORDS.get(k, k)}: memory over the soak", v["mb"])
+                self.disk()
+            self.save()
+        self.rec["soak_rounds"] = i
+        self.idle()
+        self.growth(mem0, self.guest("memory").get("pss", {}), hours=max(hours, 1e-6))
+        self.reliability()
+        self.disk()
+        for name in self.suites:
+            self.suite(name)
+        if self.pw:
+            self.update(1)
+            self.reliability()
+        self.finish()
+
+    def finish(self):
+        self.guest("restore", timeout=200)
+        self.guest("serve", "stop")
+        self.guest("sampler", "stop")
+        self.rec["ended"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        self.save()
+        self.log("done")
+
+
+PASSWORD_STEPS = {"update-restart", "sleep-video"}
+
+
+# ---------------------------------------------------------------- the comparison and the scorecard
+
+def margins(out_dir, mode, exclude=None):
+    """how far the median moved between two runs of one earlier release (1.5 times it), to widen the provisional margins;
+    the release being judged is left out, so its own trouble cannot widen them"""
+    seen = {}
+    files = sorted(glob_records(out_dir, mode))
+    by_version = {}
+    for f in files:
+        try:
+            r = json.load(open(f))
+        except (OSError, ValueError):
+            continue
+        by_version.setdefault(r.get("version"), []).append(r)
+    for version, runs in by_version.items():
+        if version == exclude:
+            continue
+        for a in runs:
+            for b in runs:
+                if a is b:
+                    continue
+                for k, m in a.get("metrics", {}).items():
+                    sa, sb = stats(m["samples"]), stats(b.get("metrics", {}).get(k, {}).get("samples", []))
+                    if sa and sb:
+                        seen[k] = max(seen.get(k, 0), abs(sa["median"] - sb["median"]) * 1.5)
+    return seen
+
+
+def glob_records(out_dir, mode):
+    pat = re.compile(r"daily-[0-9][^/]*?(-soak)?(\.\d+)?\.json$")
+    for f in os.listdir(out_dir) if os.path.isdir(out_dir) else []:
+        m = pat.match(f)
+        if m and bool(m.group(1)) == (mode == "soak"):
+            yield os.path.join(out_dir, f)
+
+
+def compare(cur, prev, learned):
+    """every change past its margin, better or worse, and whether it is clear (the two runs' ranges apart)"""
+    changes = []
+    for k, m in cur["metrics"].items():
+        p = prev.get("metrics", {}).get(k)
+        a, b = stats(m["samples"]), stats(p["samples"]) if p else None
+        if not (a and b):
+            continue
+        rel, floor = MARGINS.get(m["unit"], (0.2, 0))
+        given = max(abs(b["median"]) * rel, floor)
+        margin = max(given, min(learned.get(k, 0), 3 * given))     # the spread widens a margin, at most threefold
+        d = a["median"] - b["median"]
+        if abs(d) > margin:
+            worse = d > 0       # every number here is better lower
+            clear = a["low"] > b["high"] or a["high"] < b["low"]
+            changes.append({"what": m["words"], "metric": k, "before": b["median"], "now": a["median"], "unit": m["unit"],
+                            "margin": round(margin, 2), "worse": worse, "clear": clear})
+    for k, t in cur["tasks"].items():
+        p = prev.get("tasks", {}).get(k)
+        if p and t["runs"] - t["passed"] != p["runs"] - p["passed"]:
+            worse = (t["runs"] - t["passed"]) > (p["runs"] - p["passed"])
+            changes.append({"what": t["words"], "metric": f"task.{k}", "before": f"{p['passed']} of {p['runs']}",
+                            "now": f"{t['passed']} of {t['runs']}", "worse": worse, "clear": True})
+    for name, s in cur.get("suites", {}).items():
+        ps = prev.get("suites", {}).get(name, {}).get("steps", {})
+        for sid, st in s["steps"].items():
+            was = ps.get(sid, {}).get("status")
+            if was in ("passed", "failed") and st["status"] in ("passed", "failed") and was != st["status"]:
+                changes.append({"what": f"{s['title']} {st['words']}", "metric": f"suite.{name}.{sid}", "before": was,
+                                "now": st["status"], "worse": st["status"] == "failed", "clear": True})
+    rel_c, rel_p = cur.get("reliability", {}), prev.get("reliability", {})
+    for k, words in (("crashes", "a crash"), ("qml", "a new QML error"), ("not_answering", "an app not answering"),
+                     ("stuck", "a stuck surface"), ("journal", "a new error in the journal")):
+        old = {json.dumps(x, sort_keys=True) if not isinstance(x, str) else x for x in rel_p.get(k, [])}
+        new = [x for x in rel_c.get(k, []) if (json.dumps(x, sort_keys=True) if not isinstance(x, str) else x) not in old]
+        if k == "crashes":
+            new = [x for x in rel_c.get(k, []) if x.get("exe") not in {y.get("exe") for y in rel_p.get(k, [])}]
+        for x in new[:5]:
+            changes.append({"what": words, "metric": f"reliability.{k}", "before": "", "now": x if isinstance(x, str) else x.get("exe", str(x)),
+                            "worse": True, "clear": True})
+    return changes
+
+
+def fmt(v, unit):
+    if v is None:
+        return "-"
+    if unit == "ms":
+        return f"{v / 1000:.2f} s" if v >= 1000 else f"{v:.0f} ms"
+    if unit == "s":
+        return f"{v:.1f} s"
+    if unit in ("MB", "MB/h"):
+        return f"{v:.0f} {unit}" if abs(v) >= 10 else f"{v:.1f} {unit}"
+    if unit == "/s":
+        return f"{v:.0f}/s"
+    return f"{v:.1f} {unit}"
+
+
+def verdict(steps):
+    ran = [s for s in steps.values() if s["status"] in ("passed", "failed") or s.get("seen")]
+    failed = [s for s in steps.values() if s["status"] == "failed" or s.get("seen") == "failed"]
+    if not ran:
+        return "not judged here", []
+    if any(s["core"] for s in failed):
+        return "does not work", failed
+    if failed:
+        return "works with problems", failed
+    if any(s["core"] and s["status"] == "not run" for s in steps.values()):
+        return "not judged here", []
+    return "works", []
+
+
+def merge_hardware(rec, hw):
+    """what a tester saw on hardware (tools/hardware-daily): their pass or fail, with who and on what; never the run's"""
+    for key, h in (hw or {}).get("steps", {}).items():
+        suite, _, sid = key.partition(".")
+        st = rec.get("suites", {}).get(suite, {}).get("steps", {}).get(sid)
+        if st and st["mark"] in ("ACCOUNT", "HARDWARE") and h.get("seen") in ("passed", "failed"):
+            st.update(seen=h["seen"], by=h.get("by", ""), on=h.get("on", ""), note=h.get("note", ""))
+
+
+def scorecard(rec, prev=None, changes=None, hw=None):
+    merge_hardware(rec, hw)
+    v = rec["version"]
+    mode = "8-hour soak" if rec["mode"] == "soak" else "short run"
+    L = [f"# Tacit Daily: {v}", "",
+         f"{mode.capitalize()} in the test VM, {rec.get('started', '')[:10]}, {rec.get('minutes', 0):.0f} minutes, tacit {rec.get('tacit') or '?'}"
+         + ("" if rec.get("kvm", True) else " (no KVM: slow)") + ".",
+         "Report only: this does not hold a release back yet. The margins are provisional until 2-3 releases set the normal spread.", ""]
+    if rec.get("error"):
+        L += [f"**The run stopped: {rec['error']}**", ""]
+    tasks = rec.get("tasks", {})
+    good = [t for t in tasks.values() if t["passed"] == t["runs"]]
+    L += ["## In short", ""]
+    L.append(f"- Daily tasks: {len(good)} of {len(tasks)} worked every time." if tasks else "- Daily tasks: none ran.")
+    for name, s in rec.get("suites", {}).items():
+        word, _ = verdict(s["steps"])
+        L.append(f"- {s['title']} {word.capitalize()}.")
+    if prev is not None:
+        worse = [c for c in changes if c["worse"]]
+        L.append(f"- Against {prev['version']}: {len(changes)} changes past the margin, {len(worse)} for the worse"
+                 + (f", {sum(c['clear'] for c in worse)} of them clear." if worse else "."))
+        block = [c for c in worse if c["clear"]] + [{"what": t["words"]} for t in tasks.values() if t["passed"] < t["runs"]]
+        L.append(f"- Once this is a gate, it would {'hold the release back, for: ' + '; '.join(c['what'] for c in block[:4]) if block else 'let the release through'}.")
+    L.append("")
+    if tasks:
+        L += ["## Daily tasks", "", "| Task | Worked | What went wrong |", "|---|---|---|"]
+        for t in tasks.values():
+            why = "; ".join(sorted(set(t["why"])))[:160]
+            L.append(f"| {t['words']} | {t['passed']} of {t['runs']} | {why} |")
+        L.append("")
+    for name, s in rec.get("suites", {}).items():
+        word, failed = verdict(s["steps"])
+        L += [f"## {s['title']} {word.capitalize()}.", ""]
+        for f in failed:
+            L.append(f"- Problem: {f['words']}: {f.get('why') or f.get('note') or 'failed'}"
+                     + (f" (seen by {f.get('by')} on {f.get('on')})" if f.get("seen") else ""))
+        ok = [x["words"] for x in s["steps"].values() if x["status"] == "passed"]
+        if ok:
+            L.append(f"- Worked in the VM: {'; '.join(ok)}.")
+        seen = [f"{x['words']} ({x['seen']}, {x.get('by')} on {x.get('on')})" for x in s["steps"].values() if x.get("seen") == "passed"]
+        if seen:
+            L.append(f"- Seen working by a tester: {'; '.join(seen)}.")
+        nr = [f"{x['words']} ({x.get('why')})" for x in s["steps"].values() if x["status"] == "not run"]
+        if nr:
+            L.append(f"- Not run: {'; '.join(nr)}.")
+        tester = [f"{x['words']} [{x['mark']}]" for x in s["steps"].values() if x["status"] == "needs a tester" and not x.get("seen")]
+        if tester:
+            L.append(f"- Needs a tester (HARDWARE-DAILY.md): {'; '.join(tester)}.")
+        L.append("")
+    for section, title in (("speed", "Speed"), ("lightness", "Lightness")):
+        rows = [(k, m) for k, m in rec.get("metrics", {}).items() if m["section"] == section]
+        if not rows:
+            continue
+        L += [f"## {title}", "", "Median, and the lowest to the highest of the times it was taken.", "",
+              "| | Median | Spread | Times |" + (f" {prev['version']} |" if prev else ""), "|---|---|---|---|" + ("---|" if prev else "")]
+        for k, m in rows:
+            s = stats(m["samples"])
+            if not s:
+                continue
+            p = stats(prev["metrics"][k]["samples"]) if prev and k in prev.get("metrics", {}) else None
+            L.append(f"| {m['words']} | {fmt(s['median'], m['unit'])} | {fmt(s['low'], m['unit'])} to {fmt(s['high'], m['unit'])} | {s['n']} |"
+                     + (f" {fmt(p['median'], m['unit']) if p else '-'} |" if prev else ""))
+        L.append("")
+    rel = rec.get("reliability", {})
+    L += ["## Reliability", ""]
+    for k, words in (("crashes", "Crashes"), ("qml", "New QML errors"), ("not_answering", "Not answering"),
+                     ("stuck", "Stuck surfaces"), ("start_failures", "Starts that failed")):
+        items = rel.get(k) or []
+        show = "; ".join((x if isinstance(x, str) else x.get("exe") or x.get("text") or str(x)) for x in items[:4])
+        L.append(f"- {words}: {len(items)}{': ' + show[:200] if items else ''}")
+    j = rel.get("journal") or {}
+    L.append(f"- Errors in the journal: {sum(j.values())} ({len(j)} kinds){': ' + '; '.join(list(j)[:3])[:200] if j else ''}")
+    L.append("")
+    if prev is not None:
+        L += [f"## Changes since {prev['version']}", ""]
+        if not changes:
+            L.append("Nothing moved past its margin.")
+        for c in changes:
+            u = c.get("unit")
+            b = fmt(c["before"], u) if u else c["before"]
+            n = fmt(c["now"], u) if u else c["now"]
+            if c["metric"].startswith("reliability."):
+                L.append(f"- New: {c['what']}: {n}")
+                continue
+            L.append(f"- {'Worse' if c['worse'] else 'Better'}{' (clear)' if c['clear'] and u else ''}: {c['what']}: {b} to {n}"
+                     + (f" (margin {fmt(c['margin'], u)})" if u else ""))
+        L.append("")
+    if hw:
+        L += [f"## On a computer: {hw.get('on', '?')}, by {hw.get('by', '?')}, {hw.get('date', '')} (tools/hardware-daily)", ""]
+        for k, x in (hw.get("numbers") or {}).items():
+            if x is not None:
+                L.append(f"- {HW_WORDS.get(k, k)}: " + (", ".join(f"{a} {b}" for a, b in x.items()) if isinstance(x, dict) else str(x)))
+        for k, x in (hw.get("steps") or {}).items():
+            if k.startswith("daily."):
+                L.append(f"- {HW_WORDS.get(k, k)}: {x.get('seen')}{': ' + x['note'] if x.get('note') else ''}")
+        L.append("")
+    nr = rec.get("not_run", [])
+    L += ["## Not measured here", ""]
+    for x in nr:
+        L.append(f"- {x['what']}: not run ({x['why']}).")
+    L.append(f"- Only on a computer: {', '.join(rec.get('hardware_only', HARDWARE_ONLY))}. The protocol is HARDWARE-DAILY.md.")
+    return "\n".join(L) + "\n"
+
+
+# ---------------------------------------------------------------- here: send, run there, fetch, write
+
+def duration(s):
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)([hms])", s or "")
+    if not m:
+        sys.exit(f"daily-bench: a duration is like 8h, 30m or 90s, not {s!r}")
+    return float(m.group(1)) * {"h": 3600, "m": 60, "s": 1}[m.group(2)]
+
+
+def parse(argv):
+    a = {"version": None, "soak": 0, "compare": None, "suites": [], "runs": 3, "report": False, "machine": False}
+    i = 0
+    while i < len(argv):
+        x = argv[i]
+        if x == "--soak":
+            a["soak"] = duration(argv[i + 1]); i += 1
+        elif x == "--compare":
+            a["compare"] = argv[i + 1]; i += 1
+        elif x == "--suite":
+            name = argv[i + 1]; i += 1
+            if name == "all":
+                a["suites"] = list(SUITES)
+            elif name in SUITES:
+                a["suites"].append(name)
+            else:
+                sys.exit(f"daily-bench: no suite {name} ({', '.join(SUITES)}, all)")
+        elif x == "--runs":
+            a["runs"] = int(argv[i + 1]); i += 1
+        elif x == "--report":
+            a["report"] = True
+        elif x == "--machine":
+            a["machine"] = True
+        elif x.startswith("-") or a["version"]:
+            sys.exit(__doc__)
+        else:
+            a["version"] = x
+        i += 1
+    if not a["version"]:
+        sys.exit(__doc__)
+    return a
+
+
+def previous_release(root, version):
+    try:
+        r = json.load(open(f"{root}/tacit/notes.json"))["releases"]
+    except (OSError, ValueError, KeyError):
+        return None
+    names = [x.get("version") for x in r]
+    return names[names.index(version) + 1] if version in names and names.index(version) + 1 < len(names) else None
+
+
+def write(root, a, name):
+    out_dir = f"{root}/out/x86_64"
+    rec = json.load(open(f"{out_dir}/{name}.json"))
+    soak = "-soak" if rec["mode"] == "soak" else ""
+    cmp_version = a["compare"] or previous_release(root, a["version"])
+    prev, changes = None, None
+    if cmp_version:
+        f = f"{out_dir}/daily-{cmp_version}{soak}.json"      # a release's first run (a second run compares with it)
+        if f == f"{out_dir}/{name}.json":
+            f = None
+        if f and os.path.exists(f):
+            prev = json.load(open(f))
+            changes = compare(rec, prev, margins(out_dir, rec["mode"], exclude=rec["version"]))
+            rec["compare"] = {"with": cmp_version, "changes": changes}
+            json.dump(rec, open(f"{out_dir}/{name}.json", "w"), indent=1)
+        else:
+            print(f"daily-bench: no run of {cmp_version} to compare with ({f})", file=sys.stderr)
+    hw = f"{out_dir}/hardware-{a['version']}.json"
+    md = scorecard(rec, prev, changes, json.load(open(hw)) if os.path.exists(hw) else None)
+    open(f"{out_dir}/{name}.md", "w").write(md)
+    print(f"written: out/x86_64/{name}.json, out/x86_64/{name}.md")
+    return rec
+
+
+def main():
+    a = parse(sys.argv[1:])
+    if a["machine"]:
+        os.chdir(HERE)
+        b = Bench(a["version"], a["soak"], a["runs"], a["suites"])
+        b.soak(a["soak"], a["runs"]) if a["soak"] else b.short(a["runs"])
+        return
+    root = os.path.dirname(HERE)
+    out_dir = f"{root}/out/x86_64"
+    os.makedirs(out_dir, exist_ok=True)
+    base = f"daily-{a['version']}{'-soak' if a['soak'] else ''}"
+    if a["report"]:
+        names = sorted((f[:-5] for f in os.listdir(out_dir) if re.fullmatch(re.escape(base) + r"(\.\d+)?\.json", f)), key=len)
+        if not names:
+            sys.exit(f"daily-bench: no record {base}.json in out/x86_64")
+        for name in names:          # every run of the version, each against what it is compared with
+            write(root, a, name)
+        return
+    name, n = base, 1
+    while os.path.exists(f"{out_dir}/{name}.json"):
+        n += 1
+        name = f"{base}.{n}"
+    tmp = tempfile.mkdtemp()
+    try:
+        d = f"{tmp}/daily"
+        os.makedirs(d)
+        for f in ("vm", "daily-bench", "daily-bench-guest", "daily-bench-suites", "vm-smoke-guest"):
+            shutil.copy(f"{HERE}/{f}", d)
+        if os.environ.get("TACIT_VM_PASSWORD"):
+            fd = os.open(f"{d}/password", os.O_WRONLY | os.O_CREAT, 0o600)
+            os.write(fd, os.environ["TACIT_VM_PASSWORD"].encode())
+            os.close(fd)
+        with tarfile.open(f"{tmp}/daily.tar", "w") as t:
+            t.add(d, "daily")
+        at = ["--project", PROJECT, "--zone", ZONE]
+        on = lambda cmd, timeout=600: subprocess.run(["timeout", str(timeout), "gcloud", "compute", "ssh", MACHINE, *at, "--command", cmd],
+                                                     capture_output=True, text=True)
+        on("rm -rf ~/tacit-vm/daily && mkdir -p ~/tacit-vm")
+        if subprocess.run(["gcloud", "compute", "scp", *at, f"{tmp}/daily.tar", f"{MACHINE}:~/tacit-vm/"], capture_output=True).returncode:
+            sys.exit("daily-bench: could not copy the run to the cloud machine")
+        args = " ".join([a["version"], "--runs", str(a["runs"])] + (["--soak", f"{int(a['soak'])}s"] if a["soak"] else [])
+                        + sum((["--suite", s] for s in a["suites"]), []))
+        # the run outlasts an ssh session: started apart, then waited for (as tools/vm-smoke does)
+        on("cd ~/tacit-vm && tar -xf daily.tar && rm daily.tar && cp daily/vm vm "
+           "&& { [ ! -f daily/password ] || mv daily/password password; } "
+           f"&& (setsid nohup bash -c 'cd ~/tacit-vm/daily && python3 ./daily-bench --machine {args} > run.log 2>&1; echo $? > done' "
+           "> /dev/null 2>&1 < /dev/null &)")
+        while on("test -f ~/tacit-vm/daily/done", 120).returncode:
+            time.sleep(60)
+        print(on("cat ~/tacit-vm/daily/run.log").stdout)
+        if subprocess.run(["gcloud", "compute", "scp", *at, f"{MACHINE}:~/tacit-vm/daily/daily.json", f"{out_dir}/{name}.json"],
+                          capture_output=True).returncode:
+            sys.exit(f"daily-bench: no record came back from {MACHINE}")
+    finally:
+        shutil.rmtree(tmp)
+    write(root, a, name)
+
+
+if __name__ == "__main__":
+    main()

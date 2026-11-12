@@ -22,6 +22,22 @@ gates it can; the rest are written here so they are not skipped.
 4. **Say what the person sees.** Release notes, the notch and Settings speak in plain words: no package names, no
    commands.
 
+Owner, 2026-11-12, after 1.2.14 shipped three fixes nobody had seen work (Thyris played no sound, the volume still
+stopped at 99% on every updated computer, a three-finger swipe up sent the window to a half):
+
+5. **A changed default needs a migration, and a test on an old settings file.** A value in a person's settings file
+   wins over the default, so a new default reaches new installs only. Change one and `Config.migrate()` carries the
+   files already out there (a new config version); the shell's `tests/run` runs `migrate()` on the file every past
+   release left behind and fails while a setting stays at an old default.
+6. **A fix is claimed only when someone has seen it work**, on a running system: the VM or a computer. Each release
+   note says how in the release's `verified` in `tacit/notes.json`, by the note's text: `"vm: <check>"`, a check
+   `tools/vm-smoke` passed; `"vm-hand: <what was seen, by whom>"`, a check done by hand in the VM; or
+   `"hardware: <who saw it, on what>"`. `tools/release-check` lists any other note as needing a try on hardware, and
+   it stays out of the notes until someone has.
+7. **A gesture, sound, camera or microphone fix needs a check that does the thing**: on hardware, or a VM check that
+   exercises it (one of `tools/vm-smoke`'s, a new one there, or one done by hand that does it). A screenshot is not one:
+   1.2.14's round saw Thyris draw a page, and nobody played a sound.
+
 ## Version numbers
 
 Owner, 2026-10-25: the numbers follow how a release reaches people, not how many there have been.
@@ -47,8 +63,17 @@ Owner, 2026-10-25: the numbers follow how a release reaches people, not how many
 5. **Test in the VM like a person.** A test repo (the live `tacit.db` plus the new packages), the mirror on the day:
    Settings > Check for updates, Restart, then the version in About, "What's new", and each note in it checked one by
    one, plus a sign-in, a page in Thyris, an app from Apps, and no errors in the shell's log. Record it:
-   `tools/release-check <version> --vm-passed "what was checked"`.
-6. **Gate.** `tools/release-check <version>` passes.
+   `tools/release-check <version> --vm-passed "what was checked"`. Then `tools/vm-smoke <version>`, on a VM with the
+   release before installed: the update over a lived-in home, the plugins, the volume key to 100%, a sound out of
+   Thyris, Settings, Praxis and Files without QML errors, and nothing new in the shell's log, each recorded pass or fail.
+   Then, on the VM now on this release, Tacit Daily: `tools/daily-bench <version> --suite all` (the daily tasks, the
+   speed and lightness numbers and the five workflow suites, against the release before), and before a weekly release
+   `tools/daily-bench <version> --soak 8h` as well; `tools/hardware-daily` on a laptop for what the VM cannot do
+   (HARDWARE-DAILY.md). Owner, 2026-11-12: it only reports for now; read `out/x86_64/daily-<version>.md` and write
+   down what it flags. After 2-3 releases have set the normal spread (run the first one twice), it joins the gate in
+   step 6: a daily task that fails, or a clear slowdown or memory growth past the margin, holds the release back.
+6. **Gate.** `tools/release-check <version>` passes: a VM smoke of this version newer than its packages, every check
+   passed, every note seen working. `tools/publish` runs it first and publishes nothing until it does.
 7. **Publish.** `tools/publish <packages>`; then `tools/arch-day <day>` if the day moved; then
    `tools/publish-source <version>`.
 8. **The ISO, with every release** (owner, 2026-10-29: people download the release they read about): `tools/iso`, a

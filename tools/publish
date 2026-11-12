@@ -10,6 +10,11 @@ mirror=${TACIT_REPO_MIRROR:-$HOME/.cache/tacit-repo}
 export GNUPGHOME=$HOME/.config/tacit-packages/gnupg
 export GPGKEY=$(cat "$HOME/.config/tacit-packages/signing-key")
 [ $# -gt 0 ] || { echo "usage: tools/publish <package file> ..." >&2; exit 1; }
+# the gate (RELEASE.md, step 6): nothing is signed or sent until tools/release-check passes for the Tacit this
+# checkout's recipe names
+here=$(dirname "$(dirname "$(readlink -f "$0")")")
+release=$(cd "$here/tacit" && bash -c 'source PKGBUILD; echo "$pkgver"')
+"$here/tools/release-check" "$release" || { echo "publish: tools/release-check $release did not pass; nothing was published" >&2; exit 1; }
 declare -A by_arch
 for f in "$@"; do
 	[ -f "$f" ] || { echo "publish: no file $f" >&2; exit 1; }

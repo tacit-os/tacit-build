@@ -1,0 +1,1457 @@
+#!/usr/bin/env python3
+"""tools/daily-bench-guest <step> [arg ...]: tools/daily-bench's part inside the test computer, put there as
+/var/tmp/daily/daily-bench-guest and run as root through the guest agent (vm run -- /usr/bin/python3 -I
+/var/tmp/daily/daily-bench-guest <step> ...). What the person would do runs as the person signed in, with their
+desktop's environment, as tools/vm-smoke-guest does. Each step prints one JSON object as its last line: what it
+measured, and for a daily task "ok" and, when it failed, "why". A task is judged by what came of it (a sound in the
+speaker, a colour on the screen, an answer from the app), never by a window having appeared.
+
+Times are taken on this computer's own clock: a key's press by the kernel's time stamp on its input event (the key
+comes from QEMU's USB keyboard, sent by the cloud machine), a surface's showing by Hyprland's event for it.
+"""
+import base64, fcntl, glob, hashlib, http.server, json, os, random, re, select, signal, socket, struct, subprocess
+import sys, threading, time, urllib.request, zlib
+
+STATE = "/var/tmp/daily"
+CDP_PORT = 9333
+# the four pictures and the PDF the tasks show: colours nothing on Tacit's desktop has, so a count of them on the screen
+# says the picture is there
+WALL_A, WALL_B = (200, 40, 40), (40, 60, 200)
+MAGENTA, CYAN = (255, 0, 255), (0, 255, 255)
+# surfaces that come and go by themselves: not stuck when they are there after a task
+TRANSIENT = {"quickshell:notificationPopup", "quickshell:notificationAway", "quickshell:onScreenDisplay"}
+
+
+def out(**kw):
+    print(json.dumps(kw))
+    sys.exit(0)
+
+
+def now():
+    return time.monotonic()
+
+
+def ms(a, b):
+    return round((b - a) * 1000, 1)
+
+
+def stats(values):
+    v = sorted(x for x in values if x is not None)
+    if not v:
+        return None
+    n = len(v)
+    med = v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2
+    return {"median": med, "low": v[0], "high": v[-1], "n": n}
+
+
+# ---------------------------------------------------------------- the person at the desktop
+
+class NoDesktop(Exception):
+    pass
+
+
+def starttime(pid):
+    try:
+        return int(open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[19])
+    except (OSError, IndexError, ValueError):
+        return 0
+
+
+def pids():
+    return [int(p) for p in os.listdir("/proc") if p.isdigit()]
+
+
+class Person:
+    """The owner of the oldest process that carries the desktop's environment (one the session started), and that
+    environment (tools/vm-smoke-guest's session())."""
+
+    def __init__(self):
+        for pid in sorted(pids(), key=starttime):
+            try:
+                if os.stat(f"/proc/{pid}").st_uid < 1000:
+                    continue
+                raw = open(f"/proc/{pid}/environ", "rb").read().split(b"\0")
+            except OSError:
+                continue
+            if not any(e.startswith(b"HYPRLAND_INSTANCE_SIGNATURE=") for e in raw):
+                continue
+            self.uid = os.stat(f"/proc/{pid}").st_uid
+            self.envs = [e for e in raw if e]
+            self.env = dict(e.decode(errors="surrogateescape").split("=", 1) for e in self.envs if b"=" in e)
+            import pwd
+            p = pwd.getpwuid(self.uid)
+            self.user, self.home = p.pw_name, p.pw_dir
+            self.shell = os.path.realpath(self.env.get("TACIT_SHELL", ""))
+            self.runtime = self.env.get("XDG_RUNTIME_DIR", f"/run/user/{self.uid}")
+            self.sig = self.env["HYPRLAND_INSTANCE_SIGNATURE"]
+            return
+        raise NoDesktop("nobody's desktop is up (no process carries HYPRLAND_INSTANCE_SIGNATURE)")
+
+    def argv(self, argv, extra=None):
+        envs = self.envs + [f"{k}={v}".encode() for k, v in (extra or {}).items()]
+        return ["runuser", "-u", self.user, "--", "env", "-i", *envs, *argv]
+
+    def run(self, argv, timeout=10, input=None, extra=None):
+        """(exit code, output, errors) of argv run as the person; 124 when it ran past timeout"""
+        try:
+            p = subprocess.run(self.argv(argv, extra), input=input, capture_output=True, timeout=timeout)
+            return p.returncode, p.stdout, p.stderr
+        except subprocess.TimeoutExpired:
+            return 124, b"", b"timed out"
+
+    def text(self, argv, timeout=10):
+        code, o, _ = self.run(argv, timeout)
+        return o.decode(errors="replace").strip() if code == 0 else None
+
+    def spawn(self, argv, extra=None, log="/dev/null"):
+        """argv started by Hyprland, as a key or the dock starts a program: in the person's session, so polkit takes it
+        for the person at the computer (a process started from here is in no session, and Settings' and Apps' password-free
+        and password asks are refused to it)"""
+        env = " ".join(f"{k}={sh(v)}" for k, v in (extra or {}).items())
+        cmd = f"{'env ' + env + ' ' if env else ''}{' '.join(sh(a) for a in argv)} >{sh(log)} 2>&1"
+        return self.dispatch(f"hl.dsp.exec_cmd([==[{cmd}]==])")
+
+    def which(self, name):
+        dirs = [self.env.get("TACIT_BIN", ""), f"{self.shell}/bin", f"{self.shell}/scripts/viewer"]
+        for d in dirs + self.env.get("PATH", "").split(":"):
+            if d and os.access(f"{d}/{name}", os.X_OK):
+                return f"{d}/{name}"
+        return name
+
+    def hypr(self, *args):
+        o = self.text(["hyprctl", "-j", *args], 5)
+        try:
+            return json.loads(o) if o else None
+        except ValueError:
+            return None
+
+    def dispatch(self, expr):
+        return self.run(["hyprctl", "dispatch", expr], 5)[0] == 0
+
+    def layers(self):
+        names = []
+        for mon in (self.hypr("layers") or {}).values():
+            for level in mon.get("levels", {}).values():
+                names += [layer.get("namespace", "") for layer in level]
+        return names
+
+    def clients(self):
+        return self.hypr("clients") or []
+
+    def ipc(self, path, *args, timeout=3):
+        """one IPC call to the quickshell instance running path: its answer, or None when it did not answer"""
+        return self.text(["qs", "-p", path, "ipc", *args], timeout)
+
+    def locked(self):
+        sid = self.env.get("XDG_SESSION_ID") or subprocess.run(["loginctl", "show-user", self.user, "-p", "Display", "--value"],
+                                                               capture_output=True, text=True).stdout.strip()
+        o = subprocess.run(["loginctl", "show-session", sid, "-p", "LockedHint", "--value"], capture_output=True,
+                           text=True).stdout.strip() if sid else ""
+        return o == "yes"
+
+    def shot(self):
+        """the screen now, a quarter of its size (grim, as the person): (width, height, RGB bytes) or None"""
+        for args in (["-s", "0.25"], []):
+            code, o, _ = self.run(["grim", *args, "-t", "ppm", "-"], 15)
+            if code == 0 and o:
+                return parse_ppm(o)
+        return None
+
+    def config(self):
+        try:
+            return json.load(open(f"{self.home}/.config/illogical-impulse/config.json"))
+        except (OSError, ValueError):
+            return {}
+
+
+def sh(s):
+    return "'" + str(s).replace("'", "'\\''") + "'"
+
+
+def parse_ppm(b):
+    """a binary PPM's (width, height, RGB bytes)"""
+    fields, i = [], 2
+    if b[:2] != b"P6":
+        return None
+    while len(fields) < 3:
+        while b[i:i + 1].isspace():
+            i += 1
+        if b[i:i + 1] == b"#":
+            i = b.index(b"\n", i) + 1
+            continue
+        j = i
+        while not b[j:j + 1].isspace():
+            j += 1
+        fields.append(int(b[i:j]))
+        i = j
+    w, h, _ = fields
+    return w, h, b[i + 1:i + 1 + w * h * 3]
+
+
+def fraction(img, test, step=3):
+    """the share of the picture's pixels (every step-th one) for which test(r, g, b) holds"""
+    if not img:
+        return 0.0
+    _, _, d = img
+    hit = total = 0
+    for i in range(0, len(d) - 2, 3 * step):
+        total += 1
+        hit += test(d[i], d[i + 1], d[i + 2])
+    return hit / total if total else 0.0
+
+
+def near(c, tol=40):
+    return lambda r, g, b: abs(r - c[0]) <= tol and abs(g - c[1]) <= tol and abs(b - c[2]) <= tol
+
+
+def closer(c, other):
+    d = lambda r, g, b, k: (r - k[0]) ** 2 + (g - k[1]) ** 2 + (b - k[2]) ** 2
+    return lambda r, g, b: d(r, g, b, c) < d(r, g, b, other)
+
+
+# ---------------------------------------------------------------- pictures, a PDF and a page, made here
+
+def png(w, h, row):
+    """a PNG whose every row is the RGB bytes row(y)"""
+    raw = b"".join(b"\0" + row(y) for y in range(h))
+    chunk = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
+
+
+def solid(w, h, c):
+    line = bytes(c) * w
+    return png(w, h, lambda y: line)
+
+
+def pdf(c):
+    """a one-page A4 PDF filled with the colour c"""
+    page = f"{c[0] / 255:.3f} {c[1] / 255:.3f} {c[2] / 255:.3f} rg 0 0 595 842 re f".encode()
+    objs = [b"<< /Type /Catalog /Pages 2 0 R >>", b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R >>",
+            b"<< /Length %d >>\nstream\n" % len(page) + page + b"\nendstream"]
+    body, offsets = b"%PDF-1.4\n", []
+    for n, o in enumerate(objs, 1):
+        offsets.append(len(body))
+        body += b"%d 0 obj\n" % n + o + b"\nendobj\n"
+    xref = len(body)
+    body += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1) + b"".join(b"%010d 00000 n \n" % o for o in offsets)
+    return body + b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)
+
+
+def fixture(d):
+    """the page the page-load check opens: an article's weight (text, a style sheet, twelve pictures, a script that
+    builds a table), the same bytes every release (a fixed seed), served from this computer so the network is not in it"""
+    os.makedirs(f"{d}/img", exist_ok=True)
+    rnd = random.Random(1215)
+    words = "the a desktop window page sound picture file time day light menu search notch update sleep".split()
+    paras = "\n".join("<p>" + " ".join(rnd.choice(words) for _ in range(120)) + ".</p>" for _ in range(90))
+    imgs = "\n".join(f'<img src="img/{i}.png" width="200" height="150" alt="">' for i in range(12))
+    for i in range(12):
+        with open(f"{d}/img/{i}.png", "wb") as f:
+            f.write(png(200, 150, lambda y: bytes(rnd.getrandbits(8) for _ in range(600))))
+    with open(f"{d}/style.css", "w") as f:
+        f.write("body{font:16px/1.5 sans-serif;max-width:60em;margin:auto}" + "".join(
+            f".c{i}{{color:#{i * 37 % 256:02x}{i * 91 % 256:02x}{i * 53 % 256:02x};padding:{i % 7}px}}" for i in range(400)))
+    with open(f"{d}/app.js", "w") as f:
+        f.write("const t=document.createElement('table');for(let i=0;i<1500;i++){const r=t.insertRow();"
+                "for(let j=0;j<6;j++)r.insertCell().textContent='c'+i+'.'+j;r.className='c'+(i%400)}"
+                "document.body.appendChild(t);document.title='daily '+t.offsetHeight;")
+    with open(f"{d}/index.html", "w") as f:
+        f.write(f'<!doctype html><meta charset="utf-8"><title>daily</title><link rel="stylesheet" href="style.css">'
+                f'<script src="app.js" defer></script><h1>Tacit Daily</h1>{imgs}{paras}')
+    for root, dirs, files in os.walk(d):
+        for n in dirs:
+            os.chmod(f"{root}/{n}", 0o755)
+        for n in files:
+            os.chmod(f"{root}/{n}", 0o644)
+
+
+def materials():
+    """the pictures and the PDF, made once; readable by the person"""
+    os.makedirs(STATE, exist_ok=True)
+    os.chmod(STATE, 0o755)
+    want = {"wall-a.png": lambda: solid(1920, 1080, WALL_A), "wall-b.png": lambda: solid(1920, 1080, WALL_B),
+            "picture.png": lambda: solid(1200, 900, MAGENTA), "document.pdf": lambda: pdf(CYAN)}
+    for name, make in want.items():
+        if not os.path.exists(f"{STATE}/{name}"):
+            with open(f"{STATE}/{name}", "wb") as f:
+                f.write(make())
+            os.chmod(f"{STATE}/{name}", 0o644)
+    if not os.path.exists(f"{STATE}/www/index.html"):
+        fixture(f"{STATE}/www")
+
+
+# ---------------------------------------------------------------- Hyprland's events and the kernel's keys
+
+class Events:
+    """Hyprland's event socket (.socket2.sock): each line with the time it was read. Read while waiting, so the time is
+    the event's."""
+
+    def __init__(self, person):
+        self.s = socket.socket(socket.AF_UNIX)
+        self.s.connect(f"{person.runtime}/hypr/{person.sig}/.socket2.sock")
+        self.s.setblocking(False)
+        self.buf = b""
+        self.lines = []
+
+    def pump(self, timeout):
+        r, _, _ = select.select([self.s], [], [], max(0, timeout))
+        if not r:
+            return
+        chunk = self.s.recv(65536)
+        if not chunk:
+            raise OSError("Hyprland closed its event socket")
+        t = now()
+        self.buf += chunk
+        *done, self.buf = self.buf.split(b"\n")
+        self.lines += [(t, line.decode(errors="replace")) for line in done]
+
+    def wait(self, pred, timeout, after=0.0):
+        """the time of the first line after `after` for which pred holds, or None"""
+        end = now() + timeout
+        while True:
+            for i, (t, line) in enumerate(self.lines):
+                if t >= after and pred(line):
+                    del self.lines[:i + 1]
+                    return t, line
+            self.lines = [x for x in self.lines if x[0] >= after]
+            if now() >= end:
+                return None, None
+            self.pump(end - now())
+
+
+EVENT = "llHHi"     # struct input_event on a 64-bit kernel: the time (s, us), type, code, value
+EVIOCSCLOCKID = 0x400445A0
+EV_KEY = 1
+
+
+class Keys:
+    """The keyboard's and the pointer's input events (/dev/input/event*, read beside Hyprland, not grabbed), each with
+    the kernel's time stamp on the monotonic clock: the moment the key reached this computer."""
+
+    def __init__(self, devices=None):
+        self.fds = []
+        for d in devices if devices is not None else sorted(glob.glob("/dev/input/event*")):
+            try:
+                fd = os.open(d, os.O_RDONLY | os.O_NONBLOCK)
+            except OSError:
+                continue
+            try:
+                fcntl.ioctl(fd, EVIOCSCLOCKID, struct.pack("i", time.CLOCK_MONOTONIC))
+            except OSError:
+                pass
+            self.fds.append(fd)
+        self.size = struct.calcsize(EVENT)
+
+    def read(self, timeout):
+        """the key events that came within timeout: [(time, code, value)]"""
+        r, _, _ = select.select(self.fds, [], [], max(0, timeout))
+        got = []
+        for fd in r:
+            try:
+                data = os.read(fd, self.size * 64)
+            except BlockingIOError:
+                continue
+            for i in range(0, len(data) - self.size + 1, self.size):
+                sec, usec, typ, code, value = struct.unpack_from(EVENT, data, i)
+                if typ == EV_KEY:
+                    got.append((sec + usec / 1e6, code, value))
+        return got
+
+
+# what the press is (an input event's key code and value: 1 down, 0 up), and what shows it worked: a line from
+# Hyprland's events, or a state looked for every 50 ms. The search is Super's release (the shell raises the dock when
+# Super is let go alone); the notch, Super+Space's Space; its Esc; a click outside it; Enter at the sign-in and at the
+# lock; Super+L's L.
+SPECS = {
+    "search": (125, 0, "openlayer>>quickshell:overview", 10),
+    "notch-open": (57, 1, "openlayer>>quickshell:islandAway", 10),
+    "notch-esc": (1, 1, "closelayer>>quickshell:islandAway", 10),
+    "notch-click": (272, 1, "closelayer>>quickshell:islandAway", 10),
+    "lock": (38, 1, "locked", 15),
+    "enter-unlocked": (28, 1, "unlocked", 30),
+    "enter-usable": (28, 1, "usable", 120),
+}
+
+
+def usable(person):
+    """the desktop after the sign-in: the boot lock let go (its marker there, its process gone), the shell answers, the
+    notch is on the screen"""
+    if not os.path.exists(f"{person.runtime}/martida-lock-ready") or bootlock_pid(person.uid):
+        return False
+    return person.ipc(person.shell, "show") is not None and "quickshell:island" in person.layers()
+
+
+def unlocked(person):
+    return not person.locked() and person.ipc(person.shell, "show") is not None
+
+
+def listen(spec, ident):
+    """started apart by arm: waits for the press, then for what shows it worked, and leaves the times in a file"""
+    code, value, shows, limit = SPECS[spec]
+    res = f"{STATE}/press-{ident}.json"
+    person = Person()
+    keys = Keys()
+    events = Events(person) if ">>" in shows else None
+    open(f"{STATE}/press-{ident}.ready", "w").close()
+    end, press = now() + 20, None
+    while press is None and now() < end:
+        for t, c, v in keys.read(0.05):
+            if c == code and v == value:
+                press = t
+                break
+        if events:
+            events.pump(0)
+    result = {"spec": spec, "ok": False}
+    if press is None:
+        result["why"] = "the key never came"
+    elif events:
+        t, _ = events.wait(lambda line: line == shows, limit, after=press)
+        result.update(ok=t is not None, ms=ms(press, t) if t else None,
+                      why=None if t else f"no {shows} within {limit} s of the press")
+    else:
+        check = {"locked": lambda: person.locked(), "unlocked": lambda: unlocked(person), "usable": lambda: usable(person)}[shows]
+        t = None
+        while now() < press + limit:
+            if check():
+                t = now()
+                break
+            time.sleep(0.05)
+        result.update(ok=t is not None, ms=ms(press, t) if t else None,
+                      why=None if t else f"not {shows} within {limit} s of the press")
+    with open(res + ".tmp", "w") as f:
+        json.dump(result, f)
+    os.replace(res + ".tmp", res)
+
+
+# ---------------------------------------------------------------- processes: who is who, memory, processor, wakeups
+
+def cmdline(pid):
+    try:
+        return open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0")[:-1]
+    except OSError:
+        return []
+
+
+def qs_pids(uid, path):
+    """the quickshell processes of uid running path (qs ... -p <path>), newest first"""
+    want, found = os.path.realpath(path), []
+    for pid in pids():
+        try:
+            if os.stat(f"/proc/{pid}").st_uid != uid or open(f"/proc/{pid}/comm").read().strip() not in ("qs", "quickshell"):
+                continue
+        except OSError:
+            continue
+        a = cmdline(pid)
+        if a and os.path.realpath(a[-1].decode(errors="replace")) == want:
+            found.append(pid)
+    return sorted(found, key=starttime, reverse=True)
+
+
+def is_thyris(pid):
+    for _ in range(16):
+        if pid <= 1:
+            return False
+        try:
+            if os.readlink(f"/proc/{pid}/exe").startswith("/usr/lib/tacit/thyris/"):
+                return True
+            pid = int(open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError):
+            return False
+    return False
+
+
+def bootlock_pid(uid):
+    for pid in pids():
+        a = b" ".join(cmdline(pid))
+        if b"bootlock.qml" in a and b" ipc " not in a:
+            try:
+                if os.stat(f"/proc/{pid}").st_uid == uid:
+                    return pid
+            except OSError:
+                pass
+    return None
+
+
+def tree(roots):
+    """roots and every process under them"""
+    kids = {}
+    for pid in pids():
+        try:
+            ppid = int(open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError):
+            continue
+        kids.setdefault(ppid, []).append(pid)
+    seen, todo = set(), list(roots)
+    while todo:
+        p = todo.pop()
+        if p not in seen:
+            seen.add(p)
+            todo += kids.get(p, [])
+    return seen
+
+
+APP_QML = {"settings": "tacit-settings.qml", "praxis": "claude.qml", "graphis": "code.qml", "viewer": "viewer.qml"}
+APP_TARGET = {"praxis": "claudeapp", "graphis": "code", "viewer": "viewer"}
+APPS = ["settings", "files", "thyris", "praxis", "graphis", "viewer"]
+
+
+def targets(person):
+    """the processes measured: the shell (Files lives in it), each app, Hyprland and Praxis's agent host"""
+    t = {"shell": qs_pids(person.uid, person.shell)[-1:]}
+    for app, qml in APP_QML.items():
+        t[app] = qs_pids(person.uid, f"{person.shell}/{qml}")[:1]
+    t["thyris"] = [p for p in pids() if is_thyris(p) and not is_thyris(parent(p))]
+    t["hyprland"], t["agent-host"] = [], []
+    for pid in pids():
+        try:
+            comm = open(f"/proc/{pid}/comm").read().strip()
+        except OSError:
+            continue
+        if comm == "Hyprland":
+            t["hyprland"].append(pid)
+        elif comm.startswith("tacit-agent-hos"):
+            t["agent-host"].append(pid)
+    return t
+
+
+def parent(pid):
+    try:
+        return int(open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[1])
+    except (OSError, ValueError):
+        return 0
+
+
+def pss_mb(ps):
+    total = 0
+    for p in ps:
+        try:
+            for line in open(f"/proc/{p}/smaps_rollup"):
+                if line.startswith("Pss:"):
+                    total += int(line.split()[1])
+        except OSError:
+            pass
+    return round(total / 1024, 1)
+
+
+def ticks(ps):
+    """processor time used (clock ticks) and context switches (each one a sleep the thread was woken from, or taken
+    off the processor), summed over the processes and their threads"""
+    cpu = cs = 0
+    for p in ps:
+        try:
+            f = open(f"/proc/{p}/stat").read().rsplit(")", 1)[1].split()
+            cpu += int(f[11]) + int(f[12])
+        except (OSError, ValueError, IndexError):
+            continue
+        for st in glob.glob(f"/proc/{p}/task/*/status"):
+            try:
+                for line in open(st):
+                    if line.startswith(("voluntary_ctxt_switches", "nonvoluntary_ctxt_switches")):
+                        cs += int(line.split()[1])
+            except OSError:
+                pass
+    return cpu, cs
+
+
+def system_ticks():
+    cpu = [int(x) for x in open("/proc/stat").readline().split()[1:]]
+    ctxt = next(int(line.split()[1]) for line in open("/proc/stat") if line.startswith("ctxt"))
+    return sum(cpu), cpu[3] + cpu[4], ctxt
+
+
+# ---------------------------------------------------------------- the apps: start, find, ask, quit
+
+def cdp_get(path, timeout=2):
+    with urllib.request.urlopen(f"http://127.0.0.1:{CDP_PORT}{path}", timeout=timeout) as r:
+        return json.load(r)
+
+
+class CDP:
+    """the DevTools protocol over a WebSocket of its own (no packages in the guest): tools/loadtime.js's calls"""
+
+    def __init__(self, url, timeout=10):
+        host, _, path = url.split("://", 1)[1].partition("/")
+        h, _, p = host.partition(":")
+        self.s = socket.create_connection((h, int(p or 80)), timeout=timeout)
+        key = base64.b64encode(os.urandom(16)).decode()
+        self.s.sendall((f"GET /{path} HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                        f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+        head = b""
+        while b"\r\n\r\n" not in head:
+            c = self.s.recv(4096)
+            if not c:
+                raise OSError("the browser closed the connection")
+            head += c
+        head, self.buf = head.split(b"\r\n\r\n", 1)
+        if b" 101 " not in head.split(b"\r\n")[0]:
+            raise OSError(head.split(b"\r\n")[0].decode(errors="replace"))
+        accept = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest())
+        if accept not in head:
+            raise OSError("a WebSocket answer with the wrong key")
+        self.n, self.events = 0, []
+
+    def _recv(self, n):
+        while len(self.buf) < n:
+            c = self.s.recv(65536)
+            if not c:
+                raise OSError("the browser closed the connection")
+            self.buf += c
+        d, self.buf = self.buf[:n], self.buf[n:]
+        return d
+
+    def _frame(self, op, data):
+        mask = os.urandom(4)
+        n = len(data)
+        head = bytes([0x80 | op]) + (bytes([0x80 | n]) if n < 126 else bytes([0xFE]) + struct.pack(">H", n)
+                                     if n < 65536 else bytes([0xFF]) + struct.pack(">Q", n))
+        self.s.sendall(head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
+
+    def message(self):
+        data = b""
+        while True:
+            b0, b1 = self._recv(2)
+            n = b1 & 0x7F
+            if n == 126:
+                n = struct.unpack(">H", self._recv(2))[0]
+            elif n == 127:
+                n = struct.unpack(">Q", self._recv(8))[0]
+            mask = self._recv(4) if b1 & 0x80 else None
+            d = self._recv(n)
+            if mask:
+                d = bytes(b ^ mask[i % 4] for i, b in enumerate(d))
+            op = b0 & 0x0F
+            if op == 9:
+                self._frame(10, d)
+                continue
+            if op == 8:
+                raise OSError("the browser closed the connection")
+            data += d
+            if b0 & 0x80:
+                return json.loads(data)
+
+    def send(self, method, params=None):
+        self.n += 1
+        self._frame(1, json.dumps({"id": self.n, "method": method, "params": params or {}}).encode())
+        while True:
+            m = self.message()
+            if m.get("id") == self.n:
+                return m
+            if "method" in m:
+                self.events.append(m)
+
+    def wait(self, method, timeout):
+        end = now() + timeout
+        while now() < end:
+            for i, m in enumerate(self.events):
+                if m["method"] == method:
+                    del self.events[i]
+                    return m
+            self.s.settimeout(max(0.05, end - now()))
+            try:
+                m = self.message()
+            except socket.timeout:
+                break
+            if "method" in m:
+                self.events.append(m)
+        return None
+
+    def close(self):
+        self.s.close()
+
+
+def cdp_page():
+    for t in cdp_get("/json"):
+        if t.get("type") == "page" and t.get("webSocketDebuggerUrl"):
+            return t["webSocketDebuggerUrl"]
+    return None
+
+
+def thyris_answers():
+    try:
+        c = CDP(cdp_page(), timeout=3)
+        r = c.send("Runtime.evaluate", {"expression": "1+1", "returnByValue": True})
+        c.close()
+        return r.get("result", {}).get("result", {}).get("value") == 2
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+
+
+def windows(person, app):
+    """the app's mapped windows"""
+    cl = [c for c in person.clients() if c.get("mapped", True)]
+    if app == "files":
+        shell = set(qs_pids(person.uid, person.shell))
+        return [c for c in cl if c.get("pid") in shell and c.get("title", "").startswith("Files")]
+    if app == "thyris":
+        return [c for c in cl if c.get("class") == "browser-cef" or is_thyris(c.get("pid", 0))]
+    mine = set(qs_pids(person.uid, f"{person.shell}/{APP_QML[app]}"))
+    return [c for c in cl if c.get("pid") in mine or (app == "settings" and c.get("class") == "settings")]
+
+
+def answers(person, app):
+    """the app answers on its own main loop: an IPC call it takes and returns, or for Thyris a script its page runs"""
+    if app == "thyris":
+        return thyris_answers()
+    if app == "files":
+        return bool(person.ipc(person.shell, "call", "files", "windows"))
+    if app == "settings":
+        return person.ipc(f"{person.shell}/tacit-settings.qml", "show") is not None
+    return person.ipc(f"{person.shell}/{APP_QML[app]}", "call", APP_TARGET[app], "state") is not None
+
+
+def running(person, app):
+    if app == "files":
+        return bool(windows(person, app))
+    if app == "thyris":
+        return any(is_thyris(p) for p in pids())
+    return bool(qs_pids(person.uid, f"{person.shell}/{APP_QML[app]}"))
+
+
+def launch(person, app, cdp=True):
+    """the app started as the dock and the menu start it"""
+    if app == "thyris":
+        flags = f"--remote-debugging-port={CDP_PORT} --remote-allow-origins=*" if cdp else ""
+        return person.spawn([person.which("thyris"), "about:blank"], {"QTWEBENGINE_CHROMIUM_FLAGS": flags})
+    argv = {"settings": ["settings-open"], "files": ["files-open"], "praxis": ["claude-app"], "graphis": ["code-open"],
+            "viewer": ["viewer-open", f"{STATE}/picture.png"]}[app]
+    return person.spawn([person.which(argv[0]), *argv[1:]])
+
+
+def quit_app(person, app):
+    """as the dock's Quit does it; a process still there after 5 s is stopped (TERM, then KILL)"""
+    if app == "files":
+        for c in windows(person, app):
+            person.dispatch(f'hl.dsp.focus({{ window = "address:{c["address"]}" }})')
+            person.dispatch("hl.dsp.window.close()")
+    elif app == "thyris":
+        subprocess.run(["pkill", "-u", str(person.uid), "-f", "^/usr/lib/tacit/thyris/browser"])
+    elif app == "settings":
+        person.ipc(f"{person.shell}/tacit-settings.qml", "call", "settingsApp", "close")
+    else:
+        person.ipc(f"{person.shell}/{APP_QML[app]}", "call", APP_TARGET[app], "quitNow" if app == "graphis" else "quit")
+    for sig in (None, signal.SIGTERM, signal.SIGKILL):
+        if sig and app not in ("files",):
+            for p in ([q for q in pids() if is_thyris(q)] if app == "thyris"
+                      else qs_pids(person.uid, f"{person.shell}/{APP_QML[app]}")):
+                try:
+                    os.kill(p, sig)
+                except OSError:
+                    pass
+        end = now() + 5
+        while now() < end and running(person, app):
+            time.sleep(0.1)
+        if not running(person, app):
+            return True
+    return False
+
+
+def start_app(person, app, cold, limit=45):
+    """the app started (after a drop of the file cache for a cold start) until its window is mapped and it answers"""
+    if running(person, app) and not quit_app(person, app):
+        return {"ok": False, "why": f"{app} could not be closed before its start"}
+    if cold:
+        os.sync()
+        open("/proc/sys/vm/drop_caches", "w").write("3\n")
+        time.sleep(1)
+    try:
+        events = Events(person)
+    except OSError:
+        events = None
+    t0 = now()
+    launch(person, app)
+    mapped = None
+    end = t0 + limit
+    while mapped is None and now() < end:
+        if events:
+            t, _ = events.wait(lambda line: line.startswith("openwindow>>"), min(1, end - now()), after=t0)
+            if t is not None and windows(person, app):
+                mapped = t
+        else:
+            time.sleep(0.05)
+        if mapped is None and windows(person, app):
+            mapped = now()      # mapped before this looked (an event missed), or no event socket: when it was seen
+    if mapped is None:
+        return {"ok": False, "why": f"no window of {app} within {limit} s"}
+    answered = None
+    while now() < end:
+        if answers(person, app):
+            answered = now()
+            break
+        time.sleep(0.05)
+    if answered is None:
+        return {"ok": False, "mapped_ms": ms(t0, mapped), "why": f"{app}'s window is there but {app} did not answer"}
+    return {"ok": True, "mapped_ms": ms(t0, mapped), "answers_ms": ms(t0, answered)}
+
+
+# ---------------------------------------------------------------- the steps
+
+def mark_file():
+    try:
+        return json.load(open(f"{STATE}/mark.json"))
+    except (OSError, ValueError):
+        return {}
+
+
+def qs_logs(uid):
+    return glob.glob(f"/run/user/{uid}/quickshell/by-pid/*/log.log")
+
+
+def log_problems(lines):
+    """warnings and errors, without their times, QML line numbers taken out (tools/vm-smoke-guest's errors())"""
+    found = set()
+    for line in lines:
+        if re.search(r"\b(WARN|ERROR|CRIT|FATAL)\b", line):
+            found.add(re.sub(r"(\.qml):\d+(:\d+)?", r"\1:N", re.sub(r"^[0-9-]+ [0-9:.]+ +", "", line)).strip())
+    return found
+
+
+def step_preflight(version):
+    person = Person()
+    have = subprocess.run(["pacman", "-Q", "tacit"], capture_output=True, text=True).stdout.split()
+    have = have[1] if len(have) > 1 else ""
+    materials()
+    keep = f"{STATE}/original.json"
+    if not os.path.exists(keep):
+        json.dump({"wallpaper": person.config().get("background", {}).get("wallpaperPath", "")}, open(keep, "w"))
+    step_mark()
+    out(ok=have.split("-")[0] == version, tacit=have, user=person.user, shell=person.shell,
+        hyprland=(person.hypr("version") or {}).get("tag", ""),
+        why=None if have.split("-")[0] == version else f"the test computer has tacit {have or 'none'}, not {version}")
+
+
+def step_mark(quiet=True):
+    """where the run starts: the time, how far each log has got, the surfaces and windows of the desktop at rest"""
+    person = Person()
+    m = {"wall": time.time(), "logs": {p: os.path.getsize(p) for p in qs_logs(person.uid)},
+         "layers": sorted(set(person.layers())), "windows": [c.get("address") for c in person.clients()]}
+    json.dump(m, open(f"{STATE}/mark.json", "w"))
+    if not quiet:
+        out(ok=True, layers=m["layers"])
+
+
+def step_settle(task):
+    """after a task: a surface or a window it left that the desktop at rest did not have (2 s on)"""
+    time.sleep(2)
+    person, m = Person(), mark_file()
+    extra = sorted(set(person.layers()) - set(m.get("layers", [])) - TRANSIENT)
+    left = [f"{c.get('class')}: {c.get('title')}" for c in person.clients() if c.get("address") not in m.get("windows", [])]
+    out(task=task, layers=extra, windows=left)
+
+
+def step_sampler(what):
+    """beside the run: Hyprland's "not answering" (the dialog it runs for an app that missed its pings, which Tacit's
+    hyprland-dialog turns into the notch's prompt), noted each second; and an idle inhibitor, so the 5-minute lock, the
+    screen going off and the 15-minute sleep come only when the run asks for them"""
+    pidf = f"{STATE}/sampler.pid"
+    if what == "stop":
+        try:
+            os.killpg(int(open(pidf).read()), signal.SIGTERM)
+        except (OSError, ValueError):
+            pass
+        out(ok=True)
+    p = subprocess.Popen([sys.executable, "-I", os.path.abspath(__file__), "sample"], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    open(pidf, "w").write(str(p.pid))
+    out(ok=True, pid=p.pid)
+
+
+def sample():
+    inhibit = subprocess.Popen(["systemd-inhibit", "--what=idle", "--who=Tacit Daily", "--why=a benchmark run",
+                                "sleep", "infinity"])
+    seen = set()
+    with open(f"{STATE}/anr.jsonl", "a") as log:
+        while True:
+            for pid in pids():
+                a = b" ".join(cmdline(pid))
+                if b"Application Not Responding" in a and pid not in seen:
+                    seen.add(pid)
+                    text = a.split(b"--text", 1)[-1][:200].decode(errors="replace").strip()
+                    log.write(json.dumps({"wall": time.time(), "pid": pid, "text": text}) + "\n")
+                    log.flush()
+            if inhibit.poll() is not None:
+                inhibit = subprocess.Popen(["systemd-inhibit", "--what=idle", "--who=Tacit Daily",
+                                            "--why=a benchmark run", "sleep", "infinity"])
+            time.sleep(1)
+
+
+def typing(ident):
+    """started apart by arm-typing: every key pressed until 3 s pass with none (at most 40 s), with the offset from the
+    monotonic clock to the wall clock, which a page's times are on"""
+    keys, presses, end = Keys(), [], now() + 40
+    open(f"{STATE}/typing-{ident}.ready", "w").close()
+    while now() < end and not (presses and now() - presses[-1] > 3):
+        presses += [t for t, c, v in keys.read(0.1) if v == 1]
+    res = f"{STATE}/typing-{ident}.json"
+    json.dump({"presses": presses, "offset": time.time() - time.monotonic()}, open(res + ".tmp", "w"))
+    os.replace(res + ".tmp", res)
+
+
+def step_arm_typing(ident):
+    for f in glob.glob(f"{STATE}/typing-{ident}.*"):
+        os.remove(f)
+    subprocess.Popen([sys.executable, "-I", os.path.abspath(__file__), "typing", ident], stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    end = now() + 5
+    while now() < end and not os.path.exists(f"{STATE}/typing-{ident}.ready"):
+        time.sleep(0.02)
+    out(ok=os.path.exists(f"{STATE}/typing-{ident}.ready"))
+
+
+def step_arm(spec, ident):
+    for f in (f"{STATE}/press-{ident}.json", f"{STATE}/press-{ident}.ready"):
+        if os.path.exists(f):
+            os.remove(f)
+    subprocess.Popen([sys.executable, "-I", os.path.abspath(__file__), "listen", spec, ident], stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=open(f"{STATE}/press-{ident}.log", "w"), start_new_session=True)
+    end = now() + 5
+    while now() < end and not os.path.exists(f"{STATE}/press-{ident}.ready"):
+        time.sleep(0.02)
+    ready = os.path.exists(f"{STATE}/press-{ident}.ready")
+    out(ok=ready, why=None if ready else open(f"{STATE}/press-{ident}.log").read()[-300:] or "the listener did not start")
+
+
+def step_result(ident, limit):
+    end = now() + float(limit)
+    f = f"{STATE}/press-{ident}.json"
+    while now() < end and not os.path.exists(f):
+        time.sleep(0.05)
+    if not os.path.exists(f):
+        out(ok=False, why=f"no result within {limit} s")
+    out(**json.load(open(f)))
+
+
+def step_start(app, kind):
+    out(app=app, kind=kind, **start_app(Person(), app, kind == "cold"))
+
+
+def step_up(app, limit):
+    """the app, started by something else (search's Enter), until its window is there and it answers"""
+    person, end = Person(), now() + float(limit)
+    while now() < end:
+        if windows(person, app) and answers(person, app):
+            out(ok=True)
+        time.sleep(0.2)
+    out(ok=False, why=f"{app} did not open" if not windows(person, app) else f"{app}'s window is there but it does not answer")
+
+
+def step_wait(seconds):
+    time.sleep(float(seconds))
+    out(ok=True)
+
+
+def step_quit(app):
+    out(ok=quit_app(Person(), app))
+
+
+def step_open_all():
+    """every app open and answering, for the idle measures"""
+    person, opened, why = Person(), [], []
+    for app in APPS:
+        if not running(person, app):
+            launch(person, app, cdp=False)
+        end = now() + 45
+        while now() < end and not (windows(person, app) and (app == "thyris" or answers(person, app))):
+            time.sleep(0.2)
+        (opened if windows(person, app) else why).append(app)
+    out(ok=not why, opened=opened, why=f"not open: {', '.join(why)}" if why else None)
+
+
+def step_close_all():
+    person = Person()
+    left = [app for app in APPS if running(person, app) and not quit_app(person, app)]
+    out(ok=not left, why=f"still running: {', '.join(left)}" if left else None)
+
+
+def step_page_load(runs):
+    """tools/loadtime's method on Thyris: Navigation Timing over the DevTools protocol, the cache off and cleared before
+    each load, so each load is a first one; the page is served from this computer"""
+    person = Person()
+    materials()
+    if not (running(person, "thyris") and thyris_answers()):
+        r = start_app(person, "thyris", cold=False)
+        if not r["ok"]:
+            out(ok=False, why=f"Thyris did not start with its DevTools port: {r['why']}")
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), lambda *a: Quiet(*a, directory=f"{STATE}/www"))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{srv.server_address[1]}/index.html"
+    rows = page_loads(cdp_page(), url, int(runs))
+    srv.shutdown()
+    good = [r for r in rows if r.get("load")]
+    out(ok=len(good) == len(rows), runs=rows, why=None if len(good) == len(rows) else f"{len(rows) - len(good)} loads did not finish")
+
+
+class Quiet(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+
+READ = ("(() => { const n = performance.getEntriesByType('navigation')[0] || {};"
+        "const fcp = (performance.getEntriesByType('paint').find(x => x.name === 'first-contentful-paint') || {}).startTime || 0;"
+        "return JSON.stringify({ ttfb: Math.round(n.responseStart||0), dcl: Math.round(n.domContentLoadedEventEnd||0),"
+        "load: Math.round(n.loadEventEnd||0), fcp: Math.round(fcp), title: document.title }); })()")
+
+
+def page_loads(ws, url, runs):
+    c = CDP(ws, timeout=30)
+    for m in ("Page.enable", "Network.enable", "Runtime.enable"):
+        c.send(m)
+    c.send("Network.setCacheDisabled", {"cacheDisabled": True})
+    rows = []
+    origin = url.split("/index.html")[0]
+    for _ in range(runs):
+        c.send("Page.navigate", {"url": "about:blank"})
+        time.sleep(0.4)
+        c.events.clear()
+        c.send("Network.clearBrowserCache")
+        c.send("Storage.clearDataForOrigin", {"origin": origin, "storageTypes": "cache_storage,service_workers,shader_cache"})
+        t0 = now()
+        c.send("Page.navigate", {"url": url})
+        c.wait("Page.loadEventFired", 60)
+        row = {"error": "timed out"}
+        for _ in range(20):
+            time.sleep(0.25)
+            r = c.send("Runtime.evaluate", {"expression": READ, "returnByValue": True})
+            try:
+                row = json.loads(r["result"]["result"]["value"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if row.get("load", 0) > 0 and row.get("fcp", 0) > 0:      # the first paint can be noted after the load
+                break
+        row["wall"] = ms(t0, now())
+        rows.append(row)
+    c.close()
+    return rows
+
+
+def step_sound():
+    """tools/vm-smoke-guest's thyris-sound: a page playing a tone has a playing stream from Thyris in PipeWire, and the
+    speaker's monitor hears samples that are not zero"""
+    p = subprocess.run(["/bin/bash", f"{STATE}/vm-smoke-guest", "thyris-sound"], capture_output=True, text=True, timeout=120)
+    line = ([x for x in p.stdout.splitlines() if x.startswith(("pass thyris-sound:", "fail thyris-sound:"))] or [""])[-1]
+    ok = line.startswith("pass")
+    out(ok=ok, detail=line.split(": ", 1)[-1] if line else None,
+        why=None if ok else (line.split(": ", 1)[-1] if line else (p.stdout + p.stderr)[-300:] or "no answer"))
+
+
+def empty_workspace(person):
+    """the desktop with no window over it (workspace 9, Tacit's last); the workspace before, to go back to"""
+    before = (person.hypr("activeworkspace") or {}).get("id")
+    person.dispatch("hl.dsp.focus({ workspace = 9 })")
+    time.sleep(0.5)
+    return before, (person.hypr("activeworkspace") or {}).get("windows", 1) == 0
+
+
+def step_wallpaper():
+    """a picture of one colour made the wallpaper as the picker does it (the shell's wallpapers apply): the settings
+    file holds it, and a screenshot shows it over most of the screen. Timed from the ask to the screenshot that shows it."""
+    person = Person()
+    materials()
+    a, b = (f"{STATE}/wall-a.png", WALL_A), (f"{STATE}/wall-b.png", WALL_B)
+    cur = person.config().get("background", {}).get("wallpaperPath", "")
+    (target, tc), (_, oc) = (b, a) if cur == a[0] else (a, b)
+    back, empty = empty_workspace(person)
+    first = fraction(person.shot(), closer(tc, oc))
+    if first >= 0.5:        # the person's own picture is nearer this colour than the other: the other is the test
+        (target, tc), (_, oc) = (b, a) if target == a[0] else (a, b)
+        first = fraction(person.shot(), closer(tc, oc))
+    t0 = now()
+    person.ipc(person.shell, "call", "wallpapers", "apply", target, timeout=5)
+    shown, frac = None, first
+    while now() < t0 + 15:
+        frac = fraction(person.shot(), closer(tc, oc))
+        if frac >= 0.5:
+            shown = now()
+            break
+    saved = False
+    while now() < t0 + 20:
+        if person.config().get("background", {}).get("wallpaperPath") == target:
+            saved = True
+            break
+        time.sleep(0.2)
+    if back is not None:
+        person.dispatch(f"hl.dsp.focus({{ workspace = {back} }})")
+    why = []
+    if not saved:
+        why.append("the settings file does not hold the new picture")
+    if shown is None:
+        why.append(f"the screen did not show it (its colour on {frac:.0%} of the screen, before {first:.0%})"
+                   + ("" if empty else "; a window covered the desktop"))
+    out(ok=not why, shown_ms=ms(t0, shown) if shown else None, before=round(first, 3), after=round(frac, 3),
+        why="; ".join(why) or None)
+
+
+def step_files_preview():
+    """Files opened at a picture and at a PDF (files reveal, as Open folder does): each is previewed, its colour on the
+    screen over a preview's area (2 %, a preview column's picture is more than 3 %, a list's thumbnail far less)"""
+    person = Person()
+    materials()
+    d = f"{person.home}/tacit-daily"
+    os.makedirs(d, exist_ok=True)
+    for name in ("picture.png", "document.pdf"):
+        with open(f"{STATE}/{name}", "rb") as src, open(f"{d}/{name}", "wb") as dst:
+            dst.write(src.read())
+    subprocess.run(["chown", "-R", f"{person.uid}:", d])
+    back, _ = empty_workspace(person)
+    res, why = {}, []
+    for name, colour, key in (("picture.png", MAGENTA, "picture_ms"), ("document.pdf", CYAN, "pdf_ms")):
+        t0 = now()
+        person.ipc(person.shell, "call", "files", "reveal", f"{d}/{name}", timeout=5)
+        seen, frac = None, 0.0
+        while now() < t0 + 20:
+            frac = fraction(person.shot(), near(colour), step=1)
+            if frac >= 0.02:
+                seen = now()
+                break
+            time.sleep(0.1)
+        res[key] = ms(t0, seen) if seen else None
+        if seen is None:
+            why.append(f"the {'picture' if name.endswith('png') else 'PDF'} was not previewed (its colour on {frac:.1%} of the screen)")
+    quit_app(person, "files")
+    if back is not None:
+        person.dispatch(f"hl.dsp.focus({{ workspace = {back} }})")
+    out(ok=not why, why="; ".join(why) or None, pdftoppm=bool(subprocess.run(["which", "pdftoppm"], capture_output=True).returncode == 0), **res)
+
+
+def step_praxis():
+    """Praxis started from the menu, until its session list has loaded from the agent host (no Claude account needed),
+    and a new session opens in it"""
+    person = Person()
+    if running(person, "praxis"):
+        quit_app(person, "praxis")
+    qml = f"{person.shell}/claude.qml"
+    t0 = now()
+    launch(person, "praxis")
+    state, listed = None, None
+    while now() < t0 + 45:
+        o = person.ipc(qml, "call", "claudeapp", "state")
+        try:
+            state = json.loads(o) if o else None
+        except ValueError:
+            state = None
+        if state and state.get("connected"):
+            listed = now()
+            break
+        time.sleep(0.2)
+    if listed is None:
+        out(ok=False, why="Praxis did not answer" if state is None else "Praxis did not reach the agent host: no session list")
+    o = person.ipc(qml, "call", "claudeapp", "newSession")
+    try:
+        new = json.loads(o) if o else {}
+    except ValueError:
+        new = {}
+    ok = str(new.get("title", "")).startswith("New session")
+    out(ok=ok, list_ms=ms(t0, listed), history=state.get("history"), rows=state.get("rows"),
+        why=None if ok else f"a new session did not open (Praxis says {o!r})")
+
+
+def step_update_check():
+    """Settings' Check for updates (tacit-fetch-updates-now, started by the person as Settings starts it): it ends well
+    and the time of the last look moves"""
+    person = Person()
+    unit = "tacit-fetch-updates-now.service"
+    w0, t0 = time.time(), now()
+    before = unit_runs(unit)
+    if not person.spawn(["systemctl", "start", "--no-block", unit], log=f"{STATE}/update-check.log"):
+        out(ok=False, why="Hyprland did not take the command")
+    state = {}
+    while now() < t0 + 30 and unit_runs(unit) == before:
+        time.sleep(0.5)
+    if unit_runs(unit) == before:
+        out(ok=False, why=f"the check did not start: {open(f'{STATE}/update-check.log').read().strip()[:200]}")
+    while now() < t0 + 900:
+        o = subprocess.run(["systemctl", "show", unit, "-p", "ActiveState,Result,ExecMainStatus"], capture_output=True,
+                           text=True).stdout
+        state = dict(line.split("=", 1) for line in o.splitlines() if "=" in line)
+        if state.get("ActiveState") in ("inactive", "failed"):
+            break
+        time.sleep(1)
+    try:
+        checked = os.path.getmtime("/var/lib/tacit/updates-checked") >= w0 - 1
+    except OSError:
+        checked = False
+    waiting = subprocess.run(["pacman", "-Qu"], capture_output=True, text=True).stdout.splitlines()
+    ok = state.get("Result") == "success" and checked
+    out(ok=ok, seconds=round(now() - t0, 1), waiting=len(waiting),
+        why=None if ok else f"the check ended {state.get('ActiveState')}/{state.get('Result')} "
+                            f"(status {state.get('ExecMainStatus')}){'' if checked else ', and the last look did not move'}")
+
+
+def unit_runs(unit):
+    """how many times the unit has been started (its invocation id changes each time)"""
+    return subprocess.run(["systemctl", "show", unit, "-p", "InvocationID", "--value"], capture_output=True, text=True).stdout.strip()
+
+
+PROBE = "tacit-daily-probe"
+
+
+def step_probe_repo(n):
+    """for the soak's update: a test repo on this computer (/var/tmp/daily/repo) with a package of its own at version n,
+    [daily-test] in pacman.conf above the others; version 1 is installed first so there is something to update"""
+    n = int(n)
+    repo = f"{STATE}/repo"
+    os.makedirs(repo, exist_ok=True)
+    pkg = probe_package(repo, n)
+    subprocess.run(["repo-add", "-q", f"{repo}/daily-test.db.tar.gz", pkg], check=True, capture_output=True)
+    conf = open("/etc/pacman.conf").read()
+    if "[daily-test]" not in conf:
+        if not os.path.exists(f"{STATE}/pacman.conf"):
+            open(f"{STATE}/pacman.conf", "w").write(conf)
+        i = conf.find("\n[", conf.find("[options]") + 1)
+        conf = conf[:i] + f"\n\n[daily-test]\nSigLevel = Optional TrustAll\nServer = file://{repo}\n" + conf[i:]
+        open("/etc/pacman.conf", "w").write(conf)
+    have = subprocess.run(["pacman", "-Q", PROBE], capture_output=True, text=True).stdout.split()
+    if not have and n > 1:
+        subprocess.run(["pacman", "-U", "--noconfirm", probe_package(repo, n - 1)], check=True, capture_output=True)
+    out(ok=True, package=os.path.basename(pkg))
+
+
+def probe_package(repo, n):
+    import io, tarfile
+    path = f"{repo}/{PROBE}-{n}-1-any.pkg.tar.gz"
+    if os.path.exists(path):
+        return path
+    body = f"{n}\n".encode()
+    info = (f"pkgname = {PROBE}\npkgbase = {PROBE}\npkgver = {n}-1\npkgdesc = Tacit Daily's update probe\n"
+            f"url = https://tacitos.co\nbuilddate = {int(time.time())}\npackager = Tacit Daily\nsize = {len(body)}\n"
+            f"arch = any\n").encode()
+    with tarfile.open(path, "w:gz") as t:
+        for name, data in ((".PKGINFO", info), (f"usr/share/{PROBE}/version", body)):
+            ti = tarfile.TarInfo(name)
+            ti.size, ti.mtime, ti.mode = len(data), int(time.time()), 0o644
+            t.addfile(ti, io.BytesIO(data))
+    return path
+
+
+def step_update_arm():
+    """what Settings' Check for updates and Restart run: the download, and the install armed for the next start"""
+    person = Person()
+    unit, arm = "tacit-fetch-updates-now.service", "tacit-update@now.service"
+    for u in (unit, arm):
+        before, t0 = unit_runs(u), now()
+        person.spawn(["systemctl", "start", u], log=f"{STATE}/update-arm.log")
+        while now() < t0 + 900 and (unit_runs(u) == before or subprocess.run(
+                ["systemctl", "is-active", u], capture_output=True, text=True).stdout.strip() in ("activating", "active")):
+            time.sleep(1)
+        result = subprocess.run(["systemctl", "show", u, "-p", "Result", "--value"], capture_output=True, text=True).stdout.strip()
+        if unit_runs(u) == before or result != "success":
+            out(ok=False, why=f"{u} {'did not start' if unit_runs(u) == before else 'ended ' + result}: "
+                              f"{open(f'{STATE}/update-arm.log').read().strip()[:200]}")
+        if u == unit and not subprocess.run(["pacman", "-Qu", PROBE], capture_output=True, text=True).stdout.strip():
+            out(ok=False, why="the download did not find the test repo's new version")
+    out(ok=True)
+
+
+def step_update_done(n):
+    have = subprocess.run(["pacman", "-Q", PROBE], capture_output=True, text=True).stdout.split()
+    try:
+        result = json.load(open("/var/lib/tacit/update-result"))
+    except (OSError, ValueError):
+        result = None
+    why = []
+    if not have or have[1] != f"{n}-1":
+        why.append(f"the probe is {have[1] if have else 'not installed'}, not {n}-1")
+    if not (result or {}).get("ok"):
+        why.append(f"the install at the restart said {result}")
+    out(ok=not why, why="; ".join(why) or None)
+
+
+def step_probe_clean():
+    subprocess.run(["pacman", "-R", "--noconfirm", PROBE], capture_output=True)
+    if os.path.exists(f"{STATE}/pacman.conf"):
+        open("/etc/pacman.conf", "w").write(open(f"{STATE}/pacman.conf").read())
+        os.remove(f"{STATE}/pacman.conf")
+    out(ok="[daily-test]" not in open("/etc/pacman.conf").read())
+
+
+def step_suspend():
+    """systemctl suspend, a second after this answers (the agent sleeps with the computer)"""
+    subprocess.Popen(["/bin/sh", "-c", "sleep 1; systemctl suspend"], stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    out(ok=True)
+
+
+def step_desktop():
+    """whether the desktop answers: Hyprland, the shell, and a screen that is drawn (a screenshot of more than one
+    colour); and whether it is locked"""
+    try:
+        person = Person()
+    except NoDesktop as e:
+        out(ok=False, why=str(e))
+    hypr = person.hypr("version") is not None
+    shell = person.ipc(person.shell, "show") is not None
+    img = person.shot()
+    drawn = bool(img) and len(set(img[2][i:i + 3] for i in range(0, len(img[2]), 3 * 997))) > 3
+    why = [w for w, bad in (("Hyprland does not answer", not hypr), ("the shell does not answer", not shell),
+                            ("the screen is blank", not drawn)) if bad]
+    out(ok=not why, hyprland=hypr, shell=shell, drawn=drawn, locked=person.locked(), why="; ".join(why) or None)
+
+
+def step_boot_state():
+    """during a start: the uptime, and the boot lock (the sign-in screen) with the uptime at which it was up: the
+    "Configuration Loaded" line of its log, or its start when that is not there"""
+    up = float(open("/proc/uptime").read().split()[0])
+    try:
+        person = Person()
+    except NoDesktop:
+        out(uptime=up, bootlock=None, desktop=False)
+    pid = bootlock_pid(person.uid)
+    lock = None
+    if pid:
+        lock = {"pid": pid, "at": round(starttime(pid) / os.sysconf("SC_CLK_TCK"), 2), "how": "its start"}
+        try:
+            for line in open(f"/run/user/{person.uid}/quickshell/by-pid/{pid}/log.log", errors="replace"):
+                m = re.match(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)?)\s.*Configuration Loaded", line)
+                if m:
+                    wall = time.mktime(time.strptime(m.group(1).split(".")[0], "%Y-%m-%d %H:%M:%S"))
+                    wall += float("0." + m.group(1).split(".")[1]) if "." in m.group(1) else 0
+                    lock.update(at=round(up - (time.time() - wall), 2), how="its log")
+                    break
+        except OSError:
+            pass
+    out(uptime=up, bootlock=lock, desktop=usable(person))
+
+
+def step_idle(total, windows, window, samples):
+    """the desktop left alone total seconds; over the last windows×window seconds, the processor time and the wakeups
+    of each process measured, a window at a time; at the end its memory (PSS), samples times 20 s apart"""
+    total, windows, window, samples = float(total), int(windows), float(window), int(samples)
+    person = Person()
+    rest = total - windows * window - (samples - 1) * 20
+    time.sleep(max(0, rest))
+    cpu, wake, sys_cpu, sys_ctxt = {}, {}, [], []
+    hz = os.sysconf("SC_CLK_TCK")
+    for _ in range(windows):
+        t = {k: tree(v) for k, v in targets(person).items()}
+        a = {p: ticks([p]) for ps in t.values() for p in ps}
+        s0, t_0 = system_ticks(), now()
+        time.sleep(window)
+        b = {p: ticks([p]) for p in a if os.path.exists(f"/proc/{p}")}
+        s1, dt = system_ticks(), now() - t_0
+        for k, ps in t.items():
+            both = [p for p in ps if p in b]
+            if both:
+                cpu.setdefault(k, []).append(round(sum(b[p][0] - a[p][0] for p in both) / hz / dt * 100, 2))
+                wake.setdefault(k, []).append(round(sum(b[p][1] - a[p][1] for p in both) / dt, 1))
+        busy = (s1[0] - s0[0]) - (s1[1] - s0[1])
+        sys_cpu.append(round(busy / max(1, s1[0] - s0[0]) * 100, 2))
+        sys_ctxt.append(round((s1[2] - s0[2]) / dt, 1))
+    pss = {}
+    for i in range(samples):
+        if i:
+            time.sleep(20)
+        for k, v in targets(person).items():
+            if v:
+                pss.setdefault(k, []).append(pss_mb(tree(v)))
+    out(ok=True, cpu=cpu, wakeups=wake, system_cpu=sys_cpu, system_ctxt=sys_ctxt, pss=pss,
+        pids={k: v for k, v in targets(person).items()})
+
+
+def step_memory():
+    """each measured process's memory (PSS) now, with its pid, so a growth is only counted for one that lived through"""
+    person = Person()
+    out(ok=True, pss={k: {"mb": pss_mb(tree(v)), "pid": v[0]} for k, v in targets(person).items() if v})
+
+
+def du(path):
+    total = 0
+    for root, _, files in os.walk(path, onerror=lambda e: None):
+        for n in files:
+            try:
+                total += os.lstat(f"{root}/{n}").st_blocks * 512
+            except OSError:
+                pass
+    return round(total / 2**20, 1)
+
+
+def step_disk():
+    """the space caches and logs take"""
+    person = Person()
+    st = os.statvfs("/")
+    out(ok=True, mb={"caches (home)": du(f"{person.home}/.cache"), "Thyris's data": du(f"{person.home}/.local/share/opsis-cef"),
+                     "journal": du("/var/log/journal"), "package cache": du("/var/cache/pacman/pkg"),
+                     "crash dumps": du("/var/lib/systemd/coredump"), "shell logs": du(f"/run/user/{person.uid}/quickshell")},
+        used_mb=round((st.f_blocks - st.f_bfree) * st.f_frsize / 2**20, 1))
+
+
+def step_reliability():
+    """since the mark: crashes (coredumpctl), errors in the journal, new warnings and errors in quickshell's logs (the
+    shell and every app; QML ones named apart), and the "not answering" the sampler saw"""
+    person, m = Person(), mark_file()
+    since = f"@{int(m.get('wall', time.time()))}"
+    crashes = []
+    o = subprocess.run(["coredumpctl", "list", "--no-pager", "--json=short", f"--since={since}"], capture_output=True, text=True).stdout
+    try:
+        crashes = [{"exe": c.get("exe"), "sig": c.get("sig"), "time": c.get("time")} for c in json.loads(o or "[]")]
+    except ValueError:
+        pass
+    journal = {}
+    o = subprocess.run(["journalctl", "--no-pager", "-p", "err", f"--since={since}", "-o", "json"], capture_output=True, text=True).stdout
+    for line in o.splitlines():
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        msg = e.get("MESSAGE")
+        msg = msg if isinstance(msg, str) else "(binary)"
+        key = f"{e.get('SYSLOG_IDENTIFIER') or e.get('_COMM') or '?'}: {re.sub(r'[0-9]+', 'N', msg)[:160]}"
+        journal[key] = journal.get(key, 0) + 1
+    problems = set()
+    for log in qs_logs(person.uid):
+        try:
+            with open(log, errors="replace") as f:
+                f.seek(m.get("logs", {}).get(log, 0))
+                problems |= log_problems(f)
+        except OSError:
+            pass
+    qml = sorted(p for p in problems if re.search(r"\.qml:N", p) and "Binding loop detected" not in p)
+    anr = []
+    try:
+        anr = [json.loads(line) for line in open(f"{STATE}/anr.jsonl") if json.loads(line)["wall"] >= m.get("wall", 0)]
+    except (OSError, ValueError):
+        pass
+    out(ok=True, crashes=crashes, journal=journal, qml=qml, warnings=sorted(problems - set(qml)), not_answering=anr)
+
+
+def step_restore():
+    """the test computer as the run found it: the person's wallpaper, the test files gone, every app the run opened closed"""
+    person = Person()
+    try:
+        wall = json.load(open(f"{STATE}/original.json")).get("wallpaper")
+    except (OSError, ValueError):
+        wall = None
+    if wall:
+        person.ipc(person.shell, "call", "wallpapers", "apply", wall, timeout=5)
+    subprocess.run(["rm", "-rf", f"{person.home}/tacit-daily", f"{STATE}/original.json"])
+    for app in APPS:
+        if running(person, app):
+            quit_app(person, app)
+    out(ok=True, wallpaper=wall)
+
+
+STEPS = {"preflight": step_preflight, "mark": lambda: step_mark(False), "settle": step_settle, "sampler": step_sampler,
+         "arm": step_arm, "result": step_result, "start": step_start, "up": step_up, "wait": step_wait, "quit": step_quit, "open-all": step_open_all,
+         "close-all": step_close_all, "page-load": step_page_load, "sound": step_sound, "wallpaper": step_wallpaper,
+         "files-preview": step_files_preview, "praxis": step_praxis, "update-check": step_update_check,
+         "probe-repo": step_probe_repo, "update-arm": step_update_arm, "update-done": step_update_done,
+         "probe-clean": step_probe_clean, "suspend": step_suspend, "desktop": step_desktop, "boot-state": step_boot_state,
+         "idle": step_idle, "memory": step_memory, "disk": step_disk, "reliability": step_reliability,
+         "restore": step_restore, "listen": listen, "sample": sample, "typing": typing, "arm-typing": step_arm_typing}
+
+
+def suites():
+    """the workflow suites' steps (tools/daily-bench-suites, beside this file)"""
+    import importlib.machinery
+    return importlib.machinery.SourceFileLoader("suites", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                                       "daily-bench-suites")).load_module().STEPS
+
+if __name__ == "__main__":
+    steps = STEPS if len(sys.argv) > 1 and sys.argv[1] in STEPS else suites()
+    if len(sys.argv) < 2 or sys.argv[1] not in steps:
+        sys.exit(__doc__)
+    os.makedirs(STATE, exist_ok=True)
+    try:
+        steps[sys.argv[1]](*sys.argv[2:])
+    except NoDesktop as e:
+        out(ok=False, why=str(e))

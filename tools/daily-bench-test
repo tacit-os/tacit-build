@@ -1,0 +1,523 @@
+#!/usr/bin/env python3
+"""tools/daily-bench-test: tools/daily-bench against stand-ins, as tools/vm-smoke was checked: no VM, no cloud machine.
+A copy of this checkout's tools in a scratch folder, with a stand-in tools/vm that answers each step the way a test
+computer would (as a good release, or as a release with the faults 1.2.14 had and the OBS recording's dark window),
+and a stand-in gcloud that runs the cloud machine's half here. Then the parts that can run for real on this computer:
+the page-load method on a headless Chromium (Thyris's engine), the pictures, the PDFs and the screen arithmetic.
+Exits non-zero on any failure."""
+import importlib.machinery, json, os, shutil, subprocess, sys, tempfile, time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+FAILED = []
+
+
+def check(what, cond, detail=""):
+    print(f"  {'ok  ' if cond else 'FAIL'}  {what}{'' if cond else ': ' + str(detail)[:400]}")
+    if not cond:
+        FAILED.append(what)
+
+
+FAKE_VM = r'''#!/usr/bin/env python3
+# a stand-in tools/vm: the test computer as FAKE_SCENARIO says (good, bad), its state in ~/tacit-vm/fake.json
+import json, os, random, sys
+S = os.path.expanduser("~/tacit-vm/fake.json")
+st = json.load(open(S)) if os.path.exists(S) else {"power": "on", "calls": 0, "armed": {}, "keys": [], "boots": 0,
+                                                   "locked": False, "rebooting": 0, "log": []}
+bad = os.environ.get("FAKE_SCENARIO") == "bad"
+a = sys.argv[1:]
+st["calls"] += 1
+rnd = random.Random(st["calls"])
+j = lambda base, spread=0.05: round(base * (1 + rnd.uniform(-spread, spread)), 1)
+cmd_ = a[a.index("--") + 1:] if a[0] == "run" else []
+st["log"].append(" ".join(cmd_[3:6] if cmd_[:1] == ["/usr/bin/python3"] else (cmd_[:3] if cmd_ else a[:3])))
+import time
+def done(code=0, text=None):
+    json.dump(st, open(S, "w"))
+    if text is not None:
+        print(text if isinstance(text, str) else json.dumps(text))
+    sys.exit(code)
+if os.environ.get("FAKE_NO_AGENT") and a[0] in ("agent", "run"):
+    done(1, "vm: the guest agent does not answer (it hung up)")
+if a[0] == "agent":
+    if st["power"] != "on":
+        done(1, "vm: the guest agent does not answer")
+    if time.time() - st.get("disk_at", 0) < 2.5:     # the firmware and the kernel: 2 s before the kernel's clock starts
+        done(1, "vm: the guest agent does not answer")
+    done(0, "the guest agent answers")
+if a[0] == "status":
+    done(1) if st["power"] == "off" else done(0, st["power"])
+if a[0] == "wake":
+    st["power"], st["locked"] = "on", True
+    done(0)
+if a[0] == "disk":
+    st["power"], st["boots"], st["disk_at"] = "on", st["boots"] + 1, time.time()
+    done(0, "started with KVM")
+if a[0] == "stop":
+    st["power"] = "off"
+    done(0)
+if a[0] in ("key", "type", "click", "scroll"):
+    st["keys"].append([a[0]] + a[1:])
+    if a[0] == "type" and os.environ.get("TACIT_VM_PASSWORD", "pw-4711") in " ".join(a[1:]):
+        st["typed_password"] = True
+    done(0)
+assert a[0] == "run", a
+cmd = a[a.index("--") + 1:]
+if st["power"] != "on":
+    done(1, "vm: the guest agent does not answer")
+if cmd[0] == "/bin/sh":
+    done(0)
+if cmd[0] == "systemctl":
+    if cmd[1] == "poweroff":
+        st["power"] = "off"
+    if cmd[1] == "reboot":
+        st["disk_at"], st["boots"] = time.time(), st["boots"] + 1
+    done(0)
+step, args = cmd[3], cmd[4:]
+n = st["calls"]
+version = os.environ.get("FAKE_TACIT", "1.2.15")
+def pss(base):
+    grow = st.get("mem_calls", 0) * (25 if bad else 0.3)
+    return {"mb": round(base + grow, 1), "pid": 100}
+out = {"ok": True}
+if step == "preflight":
+    out = {"ok": args[0] == version, "tacit": version + "-1", "hyprland": "v0.57.0",
+           "why": None if args[0] == version else f"the test computer has tacit {version}-1, not {args[0]}"}
+elif step == "memory":
+    st["mem_calls"] = st.get("mem_calls", 0) + 1
+    out = {"ok": True, "pss": {"shell": pss(310), "hyprland": pss(120), "agent-host": pss(40)}}
+elif step == "disk":
+    out = {"ok": True, "mb": {"caches (home)": 210.0, "journal": 96.0, "crash dumps": 0.0}, "used_mb": 9100}
+elif step == "start":
+    app, kind = args
+    base = {"settings": 900, "files": 300, "thyris": 1400, "praxis": 1100, "graphis": 1000, "viewer": 700}[app]
+    if kind == "warm": base *= 0.5
+    if bad and app == "thyris": base *= 2.2
+    out = {"ok": True, "app": app, "kind": kind, "mapped_ms": j(base * 0.8), "answers_ms": j(base)}
+elif step == "page-load":
+    out = {"ok": True, "runs": [{"ttfb": 3, "fcp": j(180), "dcl": j(240), "load": j(320), "wall": j(400)} for _ in range(int(args[0]))]}
+elif step == "arm":
+    st["armed"][args[1]] = {"spec": args[0], "keys_at": len(st["keys"])}
+elif step == "result":
+    arm = st["armed"].get(args[0])
+    pressed = arm and len(st["keys"]) > arm["keys_at"]
+    spec = arm["spec"] if arm else "?"
+    if not pressed:
+        out = {"ok": False, "spec": spec, "why": "the key never came"}
+    else:
+        out = {"ok": True, "spec": spec, "ms": j({"search": 140, "notch-open": 90, "enter-usable": 6200}.get(spec, 300))}
+        if spec in ("enter-unlocked", "enter-usable"):
+            st["locked"] = False
+            out["ok"] = st.get("typed_password", False)
+            if not out["ok"]: out["why"] = "not unlocked within 30 s of the press"
+        if spec == "notch-click" and bad:
+            out = {"ok": False, "spec": spec, "why": "no closelayer>>quickshell:islandAway within 10 s of the press"}
+elif step == "sound":
+    out = {"ok": not bad, "why": "no playing stream from Thyris; the streams: " if bad else None,
+           "detail": "a playback stream from Thyris, Thyris (812), and the speaker's loudest sample 0.48"}
+elif step == "wallpaper":
+    out = {"ok": True, "shown_ms": j(650), "before": 0.0, "after": 0.93}
+elif step == "files-preview":
+    out = {"ok": True, "picture_ms": j(400), "pdf_ms": j(900)}
+elif step == "praxis":
+    out = {"ok": True, "list_ms": j(1300), "history": 0, "rows": 0}
+elif step == "update-check":
+    out = {"ok": True, "seconds": j(12), "waiting": 0}
+elif step == "suspend":
+    st["power"] = "suspended"
+elif step == "desktop":
+    out = {"ok": not st["locked"], "locked": st["locked"], "hyprland": True, "shell": True, "drawn": True,
+           "why": None}
+elif step == "boot-state":
+    out = {"uptime": round(time.time() - st.get("disk_at", 0) - 2.0, 2), "bootlock": {"pid": 900, "at": j(9.5), "how": "its log"}, "desktop": False}
+    st["locked"] = True
+elif step == "idle":
+    out = {"ok": True, "cpu": {"shell": [j(0.8, .2) for _ in range(5)], "thyris": [j(0.4, .2) for _ in range(5)]},
+           "wakeups": {"shell": [j(60, .1) for _ in range(5)]}, "system_cpu": [j(2.1, .2) for _ in range(5)],
+           "system_ctxt": [900] * 5, "pss": {"shell": [j(312, .01)] * 3, "thyris": [j(420, .01)] * 3, "settings": [j(150, .01)] * 3}}
+elif step == "reliability":
+    out = {"ok": True, "crashes": [{"exe": "/usr/bin/quickshell", "sig": 11, "time": "x"}] if bad else [],
+           "journal": {"bluetoothd: Failed to set mode: Blocked through rfkill (0xN)": 2},
+           "qml": ["WARN qml: modules/ii/bar/Bar.qml:N: TypeError: Cannot read property 'x' of null"] if bad else [],
+           "warnings": [], "not_answering": []}
+elif step == "settle":
+    out = {"task": args[0], "layers": ["quickshell:islandAway"] if bad and args[0] == "notch" else [], "windows": []}
+elif step == "update-done":
+    out = {"ok": True}
+# the suites
+elif step == "apps-wait":
+    failed = bad and args[0] == "libreoffice"
+    out = {"done": True, "ok": not failed, "result": {"result": "failed" if failed else "ok"}, "phase": "Installing",
+           "password": False, "why": "Apps could not get it: failed" if failed else None}
+elif step == "creator-record":
+    out = ({"ok": False, "ratio": 0.82, "opacity": 0.82, "why": "the window not in use came out at 82% of its brightness in use "
+            "(Hyprland's inactive_opacity is 0.82): the recording is dark"} if bad else {"ok": True, "ratio": 0.99, "opacity": 1.0})
+elif step == "creator-youtube":
+    out = {"ok": True, "dropped_pct": j(1.2), "cpu_pct": j(55), "played_s": 598, "sound_level": 0.3}
+elif step == "office-open":
+    out = {"ok": True, "open_ms": 3000, "mtime": 1.0}
+elif step == "office-zoom":
+    out = {"ok": True, "ratio": 1.0, "x": 960, "y": 540} if args[0] == "before" else {"ok": True, "ratio": 1.1}
+elif step == "dev-theme":
+    out = {"ok": args[0] == "vscode", "why": None if args[0] == "vscode" else "Tacit writes no theme for Zed (matugen's templates have none)"}
+elif step == "dev-ide" and args[0] == "result":
+    out = {"ok": True, "latency_ms": [j(38) for _ in range(19)]}
+done(0, out)
+'''
+
+FAKE_GCLOUD = r'''#!/usr/bin/env python3
+# a stand-in gcloud: the cloud machine is the folder in FAKE_REMOTE, its commands run here
+import os, shutil, subprocess, sys
+a, home = sys.argv[1:], os.environ["FAKE_REMOTE"]
+def remote(p): return os.path.join(home, p.split(":", 1)[1].replace("~/", "")) if ":" in p and not p.startswith("/") else p
+if a[:2] == ["compute", "ssh"]:
+    cmd = a[a.index("--command") + 1]
+    sys.exit(subprocess.run(["bash", "-c", cmd], env=dict(os.environ, HOME=home)).returncode)
+if a[:2] == ["compute", "scp"]:
+    src, dst = remote(a[-2]), remote(a[-1])
+    if dst.endswith("/"): os.makedirs(dst, exist_ok=True)
+    shutil.copy(src, dst)
+    sys.exit(0)
+sys.exit(f"fake gcloud: {a}")
+'''
+
+
+def setup(tmp):
+    repo = f"{tmp}/repo"
+    os.makedirs(f"{repo}/tools")
+    os.makedirs(f"{repo}/tacit")
+    os.makedirs(f"{repo}/out/x86_64")
+    for f in ("daily-bench", "daily-bench-guest", "daily-bench-suites", "vm-smoke-guest"):
+        shutil.copy(f"{HERE}/{f}", f"{repo}/tools/")
+    open(f"{repo}/tools/vm", "w").write(FAKE_VM)
+    os.chmod(f"{repo}/tools/vm", 0o755)
+    json.dump({"releases": [{"version": "1.2.16"}, {"version": "1.2.15"}, {"version": "1.2.14"}]}, open(f"{repo}/tacit/notes.json", "w"))
+    os.makedirs(f"{tmp}/bin")
+    open(f"{tmp}/bin/gcloud", "w").write(FAKE_GCLOUD)
+    os.chmod(f"{tmp}/bin/gcloud", 0o755)
+    return repo
+
+
+def bench(tmp, repo, *args, **env):
+    remote = f"{tmp}/remote"
+    shutil.rmtree(remote, ignore_errors=True)
+    os.makedirs(remote)
+    e = {k: v for k, v in os.environ.items() if k != "TACIT_VM_PASSWORD"}
+    e.update(PATH=f"{tmp}/bin:{os.environ['PATH']}", FAKE_REMOTE=remote, **env)
+    t = time.time()
+    p = subprocess.run([sys.executable, f"{repo}/tools/daily-bench", *args], capture_output=True, text=True, env=e, timeout=1200)
+    fake = json.load(open(f"{remote}/tacit-vm/fake.json")) if os.path.exists(f"{remote}/tacit-vm/fake.json") else {}
+    log = open(f"{remote}/tacit-vm/daily/run.log").read() if os.path.exists(f"{remote}/tacit-vm/daily/run.log") else ""
+    print(f"  ({time.time() - t:.0f} s)")
+    return p, fake, log
+
+
+def read(repo, name):
+    out = f"{repo}/out/x86_64/{name}"
+    return json.load(open(out + ".json")), open(out + ".md").read()
+
+
+def order(log, *items):
+    """the items appear in the fake's log in this order"""
+    at = 0
+    for it in items:
+        try:
+            at = next(i for i in range(at, len(log)) if log[i].startswith(it)) + 1
+        except StopIteration:
+            return False
+    return True
+
+
+def fake_runs(tmp):
+    repo = setup(tmp)
+
+    print("a good release (1.2.15), with every suite and the password")
+    p, fake, log = bench(tmp, repo, "1.2.15", "--runs", "2", "--suite", "all", TACIT_VM_PASSWORD="pw-4711", FAKE_SCENARIO="good")
+    check("it ends well", p.returncode == 0, p.stderr[-500:] + log[-800:])
+    rec, md = read(repo, "daily-1.2.15")
+    want = {k for k in ("sound", "wallpaper", "files-preview", "lock", "sleep", "update-check", "search", "notch", "praxis")}
+    check("every daily task ran twice and passed", set(rec["tasks"]) == want and all(t["runs"] == 2 == t["passed"] for t in rec["tasks"].values()),
+          {k: (t["passed"], t["runs"], t["why"]) for k, t in rec["tasks"].items()})
+    m = rec["metrics"]
+    for k, n in (("start.settings.cold", 2), ("start.thyris.warm", 2), ("page.load", 5), ("boot.sign_in", 2), ("boot.desktop", 2),
+                 ("search.shown", 2), ("notch.shown", 4), ("pss.shell", 3), ("cpu.all", 5), ("growth.shell", 1), ("wake.desktop", 2)):
+        check(f"{k} taken {n} times", len(m.get(k, {}).get("samples", [])) == n, m.get(k))
+    check("the boot is the firmware's part (2 s) plus the uptime at the sign-in (9.5 s)", all(10.5 < x < 12.6 for x in m["boot.sign_in"]["samples"]), m["boot.sign_in"])
+    check("the password was typed into the VM, never shown", fake.get("typed_password") and "pw-4711" not in json.dumps(rec) and "pw-4711" not in md)
+    check("each timed key came after its listener and before its result",
+          order(fake["log"], "arm search", "key meta_l", "result search") and order(fake["log"], "arm notch-open", "key meta_l spc", "result notch-open")
+          and order(fake["log"], "arm lock", "key meta_l l", "result lock") and order(fake["log"], "suspend", "status", "wake", "agent", "desktop"))
+    verdicts = {n: s for n, s in rec["suites"].items()}
+    tool = importlib.machinery.SourceFileLoader("db", f"{repo}/tools/daily-bench").load_module()
+    v = {n: tool.verdict(s["steps"])[0] for n, s in verdicts.items()}
+    check("verdicts: creator, office, gamer and everyday work; developer works with problems (no Zed theme)",
+          v == {"creator": "works", "office": "works", "developer": "works with problems", "gamer": "works", "everyday": "works"}, v)
+    marked = [(n, sid) for n, s in verdicts.items() for sid, st in s["steps"].items() if st["mark"] in ("ACCOUNT", "HARDWARE") and st["status"] != "needs a tester"]
+    check("no ACCOUNT or HARDWARE step is passed by the run", not marked, marked)
+    check("the scorecard names each suite in the person's words", all(f"## {t}" in md for t, _ in tool.SUITES.values()))
+    check("the scorecard says report only", "Report only" in md)
+
+    print("the same release again: the second run is .2, compared with the first (the spread)")
+    p, fake, log = bench(tmp, repo, "1.2.15", "--runs", "2", "--compare", "1.2.15", TACIT_VM_PASSWORD="pw-4711", FAKE_SCENARIO="good")
+    rec2, md2 = read(repo, "daily-1.2.15.2")
+    check("written as daily-1.2.15.2", p.returncode == 0 and rec2["version"] == "1.2.15", p.stderr[-300:])
+    worse = [c for c in rec2["compare"]["changes"] if c["worse"]]
+    check("two runs of one release: nothing clearly worse", not [c for c in worse if c["clear"] and c.get("unit")], worse)
+    learned = tool.margins(f"{repo}/out/x86_64", "short")
+    check("the pair of runs gives learned margins", len(learned) > 10, len(learned))
+
+    print("a release with faults (1.2.16): no Thyris sound, a crash, a slow Thyris, a leak, a dark OBS recording, LibreOffice not got")
+    p, fake, log = bench(tmp, repo, "1.2.16", "--runs", "1", "--suite", "creator", "--suite", "office",
+                         TACIT_VM_PASSWORD="pw-4711", FAKE_SCENARIO="bad", FAKE_TACIT="1.2.16")
+    check("report only: it still ends well", p.returncode == 0, p.stderr[-300:] + log[-500:])
+    rec, md = read(repo, "daily-1.2.16")
+    check("sound failed", rec["tasks"]["sound"]["passed"] == 0)
+    check("the notch's click-away failed, and the surface it left is counted",
+          rec["tasks"]["notch"]["passed"] == 0 and any("islandAway" in s for s in rec["reliability"]["stuck"]))
+    cr = rec["suites"]["creator"]["steps"]["record-unfocused"]
+    check("the OBS recording of a window not in use is caught as dark, with inactive_opacity named",
+          cr["status"] == "failed" and "inactive_opacity is 0.82" in cr["why"], cr)
+    check("creator: does not work", "## Can a streamer use it? Does not work." in md, md[:2000])
+    off = rec["suites"]["office"]["steps"]
+    check("office: LibreOffice not got, the documents not run, and it does not work",
+          off["lo-install"]["status"] == "failed" and off["docx"]["status"] == "not run"
+          and "## Can a student or an office worker use it? Does not work." in md, off)
+    ch = {c["metric"]: c for c in rec["compare"]["changes"]}
+    check("compared with 1.2.15 by default (the release before in notes.json)", rec["compare"]["with"] == "1.2.15")
+    check("Thyris's cold start: clearly worse", ch.get("start.thyris.cold", {}).get("worse") and ch["start.thyris.cold"]["clear"], ch.get("start.thyris.cold"))
+    check("the shell's memory growth flagged", ch.get("growth.shell", {}).get("worse"), ch.get("growth.shell"))
+    check("the crash, the QML error and the failing task flagged", "reliability.crashes" in ch and "reliability.qml" in ch and "task.sound" in ch, list(ch))
+    check("the scorecard says a gate would hold it back", "would hold the release back" in md)
+
+    print("no password")
+    p, fake, log = bench(tmp, repo, "1.2.16", "--runs", "1", FAKE_SCENARIO="good", FAKE_TACIT="1.2.16")
+    rec, md = read(repo, "daily-1.2.16.2")
+    check("lock, sleep, the start and the update are said not run, not failed",
+          "lock" not in rec["tasks"] and "sleep" not in rec["tasks"] and len(rec["not_run"]) == 4 and "no password" in md, rec["not_run"])
+    check("nothing typed but the search's word", [k for k in fake["keys"] if k[0] == "type"] == [["type", "graphis"]], fake["keys"])
+
+    print("a soak (20 s stands for 8 h)")
+    p, fake, log = bench(tmp, repo, "1.2.15", "--soak", "20s", "--runs", "1", TACIT_VM_PASSWORD="pw-4711", FAKE_SCENARIO="good")
+    rec, md = read(repo, "daily-1.2.15-soak")
+    check("a soak record, with rounds, the update through Restart, and growth an hour",
+          p.returncode == 0 and rec["mode"] == "soak" and rec.get("soak_rounds", 0) >= 1 and rec["tasks"]["update"]["passed"] == 1
+          and rec["metrics"].get("growth.shell", {}).get("unit") == "MB/h", (p.stderr[-300:], rec.get("soak_rounds"), rec["tasks"].get("update")))
+    check("the soak is reported as one", "8-hour soak" in md)
+
+    print("no guest agent")
+    p, fake, log = bench(tmp, repo, "1.2.15", FAKE_NO_AGENT="1")
+    check("it says how to install the agent, and fails", p.returncode != 0 and "qemu-guest-agent" in log + p.stderr, (p.returncode, log[-300:]))
+
+    print("--report: the scorecard again from the record, with a tester's hardware record")
+    json.dump({"steps": {"everyday.wifi": {"seen": "failed", "by": "abdul", "on": "Book4 Edge", "note": "lost after sleep"},
+                         "creator.bt-speaker": {"seen": "passed", "by": "abdul", "on": "Book4 Edge"}}},
+              open(f"{repo}/out/x86_64/hardware-1.2.15.json", "w"))
+    p = subprocess.run([sys.executable, f"{repo}/tools/daily-bench", "1.2.15", "--report", "--compare", "1.2.15"], capture_output=True, text=True)
+    rec, md = read(repo, "daily-1.2.15.2")
+    check("--report writes the newest run's scorecard", p.returncode == 0 and "Changes since 1.2.15" in md, p.stderr)
+    os.rename(f"{repo}/out/x86_64/hardware-1.2.15.json", f"{repo}/out/x86_64/hardware-1.2.16.json")
+    hw = json.load(open(f"{repo}/out/x86_64/hardware-1.2.16.json"))
+    hw.update(by="abdul", on="Book4 Edge", date="2026-11-13", numbers={"battery_idle": {"watts": 4.1, "percent_per_hour": 7.2}})
+    hw["steps"] = {"daily.touchpad": {"seen": "failed", "note": "swipe up sent the window to a half"}, "office.camera": {"seen": "failed", "by": "abdul", "on": "Book4 Edge", "note": "lost after sleep"},
+                   "creator.bt-speaker": {"seen": "passed", "by": "abdul", "on": "Book4 Edge"},
+                   "creator.record-unfocused": {"seen": "passed", "by": "someone", "on": "x"}}
+    json.dump(hw, open(f"{repo}/out/x86_64/hardware-1.2.16.json", "w"))
+    p = subprocess.run([sys.executable, f"{repo}/tools/daily-bench", "1.2.16", "--report"], capture_output=True, text=True)
+    md1 = open(f"{repo}/out/x86_64/daily-1.2.16.md").read()
+    check("a tester cannot pass a step the VM runs", "someone" not in md1, md1[-800:])
+    check("the computer's numbers and sightings in their own section", "## On a computer: Book4 Edge, by abdul" in md1
+          and "The battery at rest: watts 4.1" in md1 and "The touchpad: failed: swipe up sent the window to a half" in md1, md1[-1200:])
+    check("re-written later, beside a second run of its own, 1.2.16 still shows Thyris's slower start and the growth",
+          "Worse (clear): Thyris, cold start" in md1 and "Worse (clear): The shell: memory growth over the run" in md1, md1[-1800:])
+    check("a tester's failure on hardware shows as a problem, with who saw it", "the camera in a call: lost after sleep (seen by abdul on Book4 Edge)" in md1, md1[-2500:])
+    check("a tester's pass shows as seen by them, not as the run's", "Seen working by a tester: YouTube heard over a Bluetooth speaker" in md1, md1[-1500:])
+    shutil.copy(f"{repo}/out/x86_64/daily-1.2.16.md", f"{tmp}/sample-bad.md")
+    shutil.copy(f"{repo}/out/x86_64/daily-1.2.15.md", f"{tmp}/sample-good.md")
+
+
+def real_parts(tmp):
+    print("the parts that run for real here")
+    g = importlib.machinery.SourceFileLoader("guest", f"{HERE}/daily-bench-guest").load_module()
+    s = importlib.machinery.SourceFileLoader("suites", f"{HERE}/daily-bench-suites").load_module()
+    # pictures and PDFs: decoded by tools that are not ours
+    open(f"{tmp}/m.png", "wb").write(g.solid(120, 90, g.MAGENTA))
+    open(f"{tmp}/c.pdf", "wb").write(g.pdf(g.CYAN))
+    open(f"{tmp}/two.pdf", "wb").write(s.two_page_pdf())
+    if shutil.which("pdftoppm"):
+        for f, pages, colours in (("c.pdf", 1, [g.CYAN]), ("two.pdf", 2, [(0, 255, 255), (255, 255, 0)])):
+            r = subprocess.run(["pdftoppm", "-r", "20", f"{tmp}/{f}", f"{tmp}/p-{f}"], capture_output=True)
+            imgs = sorted(x for x in os.listdir(tmp) if x.startswith(f"p-{f}"))
+            ok = r.returncode == 0 and len(imgs) == pages and all(
+                g.fraction(g.parse_ppm(open(f"{tmp}/{i}", "rb").read()), g.near(c), 1) > 0.95 for i, c in zip(imgs, colours))
+            check(f"{f}: pdftoppm reads it, {pages} page(s) of the right colour", ok, (r.stderr, imgs))
+    else:
+        print("  (no pdftoppm here: the PDFs not decoded)")
+    if shutil.which("magick") or shutil.which("convert"):
+        conv = shutil.which("magick") or shutil.which("convert")
+        r = subprocess.run([conv, f"{tmp}/m.png", "ppm:-"], capture_output=True)
+        check("the PNG: ImageMagick reads it, all magenta", r.returncode == 0 and g.fraction(g.parse_ppm(r.stdout), g.near(g.MAGENTA), 1) == 1.0)
+    else:
+        import zlib
+        raw = zlib.decompress(open(f"{tmp}/m.png", "rb").read()[33 + 8:-12])
+        check("the PNG: its pixel data is magenta", raw[1:4] == bytes(g.MAGENTA))
+    # the OBS check's judging half: recordings encoded as OBS encodes them (x264), one of window B in use (light grey 225)
+    # and one as inactive_opacity = 0.82 leaves it over black (184): read back by the step's own frame reader
+    if shutil.which("ffmpeg"):
+        rec = {}
+        for name, grey in (("in-use", 225), ("not-in-use", round(225 * 0.82))):
+            rec[name] = f"{tmp}/{name}.mkv"
+            subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"color=c=0x{grey:02X}{grey:02X}{grey:02X}:s=640x360:d=4:r=30",
+                            "-c:v", "libx264", "-pix_fmt", "yuv420p", rec[name]], check=True)
+        a, b = s.brightness(rec["in-use"]), s.brightness(rec["not-in-use"])
+        check("a recording dimmed by inactive_opacity 0.82 reads back at about 82 % brightness", a and b and 0.79 < b / a < 0.85, (a, b))
+        check("and the step calls it dark, naming inactive_opacity", (s.dark(b / a, 0.82) or "").startswith("the window not in use came out at 8")
+              and "inactive_opacity is 0.82" in s.dark(b / a, 0.82), s.dark(b / a, 0.82))
+        check("a recording as bright as in use passes", s.dark(s.brightness(rec["in-use"]) / a, 1.0) is None)
+    else:
+        print("  (no ffmpeg here: the recording check's frames not read)")
+    # the screen arithmetic on a made-up screenshot: 30 % red wallpaper, the rest grey
+    w, h = 100, 50
+    d = bytes(g.WALL_A) * (w * 15) + bytes((128, 128, 128)) * (w * 35)
+    img = g.parse_ppm(b"P6\n# a comment\n%d %d\n255\n" % (w, h) + d)
+    check("a screenshot's share of a colour", abs(g.fraction(img, g.closer(g.WALL_A, g.WALL_B), 1) - 0.3) < 0.01)
+    check("stats: median and spread", g.stats([5, 1, 3]) == {"median": 3, "low": 1, "high": 5, "n": 3})
+    # the log filter, as tools/vm-smoke-guest's
+    lines = ["2026-11-12 10:00:00.123 WARN  qml: modules/ii/bar/Bar.qml:120:5: TypeError: x", "2026-11-12 10:00:01.000 INFO  fine"]
+    check("QML errors without their times or line numbers", g.log_problems(lines) == {"WARN  qml: modules/ii/bar/Bar.qml:N: TypeError: x"})
+    # the key listener, on a pipe of input events in the kernel's own layout
+    import struct
+    rfd, wfd = os.pipe()
+    os.write(wfd, struct.pack(g.EVENT, 100, 250000, 4, 4, 7) + struct.pack(g.EVENT, 100, 500000, 1, 125, 0))
+    k = g.Keys(devices=[])
+    k.fds = [rfd]
+    os.set_blocking(rfd, False)
+    check("an input event's key and the kernel's time", k.read(1) == [(100.5, 125, 0)])
+    # Hyprland's event socket, by a stand-in
+    import socket, threading
+    sock = f"{tmp}/hypr/sig/.socket2.sock"
+    os.makedirs(os.path.dirname(sock))
+    srv = socket.socket(socket.AF_UNIX)
+    srv.bind(sock)
+    srv.listen(1)
+    def feed():
+        c, _ = srv.accept()
+        c.sendall(b"openlayer>>quickshell:bar\n")
+        time.sleep(0.2)
+        c.sendall(b"openlayer>>quickshell:overview\nopenwin")
+        time.sleep(0.1)
+        c.sendall(b"dow>>abc,1,x,y\n")
+        time.sleep(1)
+    threading.Thread(target=feed, daemon=True).start()
+    P = type("P", (), {"runtime": tmp, "sig": "sig"})
+    ev = g.Events(P())
+    t0 = g.now()
+    t, line = ev.wait(lambda x: x == "openlayer>>quickshell:overview", 3, after=t0)
+    check("Hyprland's event, with the time it came", line == "openlayer>>quickshell:overview" and 0.15 < t - t0 < 1, (line, t and t - t0))
+    t, line = ev.wait(lambda x: x.startswith("openwindow>>"), 3)
+    check("an event split across two reads", line == "openwindow>>abc,1,x,y", line)
+    # the page-load method (tools/loadtime's) and the call page, on a headless Chromium, Thyris's engine
+    browser = shutil.which("chromium") or shutil.which("google-chrome-stable")
+    if not browser:
+        print("  (no Chromium here: the DevTools parts not run)")
+        return
+    g.materials = lambda: None
+    www = f"{tmp}/www"
+    g.fixture(www)
+    import http.server
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), lambda *a: g.Quiet(*a, directory=www))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = 9399
+    prof = f"{tmp}/chromium"
+    b = subprocess.Popen([browser, "--headless=new", "--disable-gpu", "--no-first-run", f"--user-data-dir={prof}",
+                          f"--remote-debugging-port={port}", "--remote-allow-origins=*", "about:blank"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        g.CDP_PORT = port
+        for _ in range(100):
+            try:
+                ws = g.cdp_page()
+                break
+            except OSError:
+                time.sleep(0.1)
+        check("a script runs in the page (how Thyris answers)", g.thyris_answers())
+        rows = g.page_loads(ws, f"http://127.0.0.1:{srv.server_address[1]}/index.html", 3)
+        check("three cold loads of the fixture page, each with its load and first paint",
+              len(rows) == 3 and all(r.get("load", 0) > 0 and r.get("fcp", 0) > 0 and r["title"].startswith("daily ") for r in rows), rows)
+        print("    ", rows[0])
+        # the call page: the microphone has no device here and the screen has no picker; the peers and the counting do
+        c = g.CDP(g.cdp_page(), timeout=20)
+        c.send("Page.enable")
+        os.makedirs(f"{tmp}/pages")
+        open(f"{tmp}/pages/call.html", "w").write(s.PAGES["call.html"])
+        open(f"{tmp}/pages/ide.html", "w").write(s.PAGES["ide.html"])
+        srv2 = http.server.ThreadingHTTPServer(("127.0.0.1", 0), lambda *a: g.Quiet(*a, directory=f"{tmp}/pages"))
+        threading.Thread(target=srv2.serve_forever, daemon=True).start()
+        c.events.clear()
+        c.send("Page.navigate", {"url": f"http://127.0.0.1:{srv2.server_address[1]}/ide.html"})
+        c.wait("Page.loadEventFired", 20)
+        c.send("Input.insertText", {"text": "x"})
+        time.sleep(0.5)
+        paints = json.loads(s.js(c, "JSON.stringify(window.paints)"))
+        check("the web IDE page draws again on a key, with the wall-clock time of it", len(paints) == 1 and abs(paints[0] / 1000 - time.time()) < 5, paints)
+        c.events.clear()
+        c.send("Page.navigate", {"url": f"http://127.0.0.1:{srv2.server_address[1]}/call.html"})
+        c.wait("Page.loadEventFired", 20)
+        r = s.js(c, "window.call()", wait=True)
+        check("the call page's peers connect and count what arrives (nothing to send here)", r == "{}", r)
+        rr = json.loads(s.js(c, "JSON.stringify(window.r)"))
+        check("no device and no permission here: the microphone is refused, and said so", str(rr.get("mic", "")).startswith("error:"), rr)
+        open(f"{tmp}/pages/click.html", "w").write('<button id=b style="width:200px;height:60px" onclick="document.title = String(event.isTrusted)">b</button>')
+        c.events.clear()
+        c.send("Page.navigate", {"url": f"http://127.0.0.1:{srv2.server_address[1]}/click.html"})
+        c.wait("Page.loadEventFired", 20)
+        s.click(c, "document.getElementById('b')")
+        time.sleep(0.3)
+        check("the run's click is a person's click to the page (trusted: it may open a picker)", s.js(c, "document.title") == "true", s.js(c, "document.title"))
+        c.close()
+    finally:
+        b.terminate()
+        b.wait()
+    # the call with something to send: Chromium's own stand-in microphone and camera, its permission prompt answered
+    b = subprocess.Popen([browser, "--headless=new", "--disable-gpu", "--no-first-run", f"--user-data-dir={prof}2",
+                          "--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream",
+                          f"--remote-debugging-port={port}", "--remote-allow-origins=*", "about:blank"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(100):
+            try:
+                ws = g.cdp_page()
+                break
+            except OSError:
+                time.sleep(0.1)
+        c = g.CDP(ws, timeout=30)
+        c.send("Page.enable")
+        c.send("Page.navigate", {"url": f"http://127.0.0.1:{srv2.server_address[1]}/call.html"})
+        c.wait("Page.loadEventFired", 20)
+        time.sleep(2)
+        rr = json.loads(s.js(c, "JSON.stringify(window.r)"))
+        got = json.loads(s.js(c, "window.call()", wait=True) or "{}")
+        check("a stand-in microphone and camera: live tracks, and the call carries the sound (bytes arrive)",
+              rr.get("mic") == ["live"] and rr.get("camera") == ["live"] and got.get("audio", {}).get("bytes", 0) > 0, (rr, got))
+        c.close()
+    finally:
+        b.terminate()
+        b.wait()
+
+
+def main():
+    tmp = tempfile.mkdtemp(prefix="daily-bench-test.")
+    try:
+        if "--real-only" not in sys.argv:
+            fake_runs(tmp)
+        if "--fake-only" not in sys.argv:
+            real_parts(tmp)
+        if "--keep" in sys.argv:
+            print("kept:", tmp)
+    finally:
+        if "--keep" not in sys.argv:
+            shutil.rmtree(tmp, ignore_errors=True)
+    print(f"\n{'all passed' if not FAILED else str(len(FAILED)) + ' FAILED: ' + '; '.join(FAILED)}")
+    sys.exit(1 if FAILED else 0)
+
+
+if __name__ == "__main__":
+    main()

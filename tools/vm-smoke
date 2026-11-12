@@ -1,0 +1,136 @@
+#!/bin/bash
+# tools/vm-smoke <version>: the release's scripted checks in the test VM, each pass or fail, recorded in
+# out/x86_64/vm-smoke-<version>, which tools/release-check requires. Run here, it drives the cloud machine
+# (cef-build-x64) as tools/iso does. There the VM must be running a disk with the release before this one installed,
+# booted with this checkout's tools/vm (vm disk: the guest agent's line and a sound card), with qemu-guest-agent installed
+# in it once. Commands reach it through that agent (vm run), not as typed keys.
+#   update        the previous release updated the way Settings does (the download, Restart, the install at the next
+#                 start) from a test repo (the live database and this release's packages), over a lived-in home: its
+#                 own settings file with Loudest allowed at 99, a pin of its own and a wallpaper; after it, 99 is 100
+#                 and the pin and the wallpaper stayed
+#   plugins       hyprctl plugins list shows tacit-frame
+#   volume-100    the volume key (QEMU's volumeup, through Hyprland's bind and the shell's protection) takes 90% to
+#                 100%, and it stays there
+#   thyris-sound  a page in Thyris playing a tone has a playback stream in PipeWire, and the speaker hears it
+#   apps-qml      Settings, Praxis and Files start with no QML error in their logs
+#   shell-log     the shell's log has no warning or error that it did not have on the previous release
+set -eu
+here=$(dirname "$(readlink -f "$0")")
+
+# On the cloud machine, in ~/tacit-vm/smoke: tools/vm-smoke --machine <version> <previous>
+machine() {
+	version=$1 previous=$2
+	cd "$here"
+	vm() { ~/tacit-vm/vm "$@"; }
+	guest() { ~/tacit-vm/vm run --timeout "${wait:-300}" -- /bin/bash /var/tmp/vm-smoke-guest "$@"; }
+	record=vm-smoke-$version
+	: > "$record"
+	# the check's own line from the guest, or what went wrong when it gave none
+	said() {
+		local line
+		line=$(grep -E "^(pass|fail) $1:" <<<"$2" | tail -1)
+		echo "${line:-fail $1: $(tail -c 300 <<<"$2" | tr '\n' ' ')}" | tee -a "$record"
+	}
+	if ! vm agent; then
+		cat >&2 <<-EOF
+		vm-smoke: the test computer's guest agent does not answer. Once per test disk: start it with this checkout's
+		tools/vm (vm disk), sign in, and in a terminal there: sudo pacman -S qemu-guest-agent, then
+		sudo systemctl start qemu-guest-agent. vm agent must then say it answers, and again after a restart.
+		EOF
+		exit 1
+	fi
+	vm run --stdin vm-smoke-guest -- /bin/sh -c 'cat > /var/tmp/vm-smoke-guest'
+	have=$(guest version)
+	[ "${have%-*}" = "$previous" ] || { echo "fail update: the test computer has tacit $have, not $previous" | tee -a "$record"; exit 1; }
+
+	out=$(guest home 2>&1) || { said update "$out"; exit 1; }
+	echo "$out"
+	before=$(guest shell-errors 2>&1) || true
+	port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+	# QEMU's user network takes the guest's 10.0.2.2 to this machine's 127.0.0.1
+	python3 -m http.server "$port" --bind 127.0.0.1 --directory repo > http.log 2>&1 & http=$!
+	trap 'kill $http 2>/dev/null || true' EXIT
+	out=$(wait=1800 guest update "http://10.0.2.2:$port" 2>&1) || true
+	grep -qx armed <<<"$out" || { said update "$out"; exit 1; }
+	vm run --timeout 10 -- systemctl reboot || true
+	# down, up again through the install's own restart, and the desktop with its shell
+	for i in $(seq 60); do vm agent >/dev/null 2>&1 || break; sleep 5; done
+	up=""
+	for i in $(seq 240); do sleep 10; guest up >/dev/null 2>&1 && { up=1; break; }; done
+	kill $http
+	guest restore-pacman || true
+	[ -n "$up" ] || { echo "fail update: the desktop did not come back within 40 minutes of the restart" | tee -a "$record"; exit 1; }
+	sleep 30    # the shell and PipeWire settle
+	said update "$(guest updated "$version" 2>&1)"
+	said plugins "$(guest plugins 2>&1)"
+
+	guest volume-set 0.90 || true
+	v=""
+	for n in $(seq 10); do
+		vm key volumeup || true; sleep 0.5
+		v=$(guest volume 2>&1) || true; [ "$v" = 1.00 ] && break
+	done
+	sleep 3; v=$(guest volume 2>&1) || true
+	if [ "$v" = 1.00 ]; then echo "pass volume-100: the volume key took 90% to 100% in $n presses, and it stayed there"
+	elif [ "$v" = 0.90 ]; then echo "fail volume-100: the volume key did not move the volume from 90%"
+	else echo "fail volume-100: the volume key stopped at $v"; fi | tee -a "$record"
+
+	said thyris-sound "$(wait=120 guest thyris-sound 2>&1)"
+	said apps-qml "$(wait=120 guest apps 2>&1)"
+	new=$(comm -13 <(sort -u <<<"$before") <(guest shell-errors 2>&1 | sort -u))
+	if [ -z "$new" ]; then echo "pass shell-log: nothing in the shell's log that it did not have on $previous"
+	else echo "fail shell-log: new in the shell's log: $(head -5 <<<"$new" | tr '\n' ' ')"; fi | tee -a "$record"
+	! grep -q '^fail ' "$record"
+}
+
+if [ "${1:-}" = --machine ]; then
+	shift
+	machine "$@"
+	exit
+fi
+
+cd "$(dirname "$here")"
+version=${1:-}
+[ -n "$version" ] || { echo "usage: tools/vm-smoke <version>" >&2; exit 2; }
+tv=$(cd tacit && bash -c 'source PKGBUILD; echo "$pkgver"')
+[ "$tv" = "$version" ] || { echo "vm-smoke: tacit's recipe is $tv, not $version" >&2; exit 1; }
+previous=$(python3 -c 'import json, sys; r = json.load(open("tacit/notes.json"))["releases"]; print(r[1]["version"] if r[0]["version"] == sys.argv[1] else "")' "$version")
+[ -n "$previous" ] || { echo "vm-smoke: notes.json does not lead with $version" >&2; exit 1; }
+out=out/x86_64
+at=(--project YOUR-PROJECT --zone europe-west4-a); vm=cef-build-x64
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/smoke/repo"
+
+# the test repo: [tacit]'s live database with this release's packages, the ones release-check counts, added to it
+gcloud storage cp -q gs://tacit-packages-2aafc574/x86_64/tacit.db.tar.zst "$tmp/smoke/repo/" \
+	|| { echo "vm-smoke: the live repo's database could not be read" >&2; exit 1; }
+live=$(tar -tf "$tmp/smoke/repo/tacit.db.tar.zst" | sed -n 's|/$||p')
+pkgs=()
+for f in */PKGBUILD; do
+	d=${f%/PKGBUILD}
+	[ "$d" = tacit-device-book4-edge ] && continue      # aarch64, built on the Book4
+	v=$(cd "$d" && bash -c 'source PKGBUILD; echo "${epoch:+$epoch:}$pkgver-$pkgrel"' 2>/dev/null) || continue
+	grep -qx "$d-$v" <<<"$live" && continue
+	p=$(ls -t $out/$d-$v-*.pkg.tar.zst 2>/dev/null | head -1)
+	[ -n "$p" ] || { echo "vm-smoke: $d $v is not built (tools/cloud-packages)" >&2; exit 1; }
+	pkgs+=("$p")
+done
+[ ${#pkgs[@]} -gt 0 ] || { echo "vm-smoke: no package of $version is new to [tacit]" >&2; exit 1; }
+cp "${pkgs[@]}" "$tmp/smoke/repo/"
+(cd "$tmp/smoke/repo" && repo-add -q tacit.db.tar.zst "${pkgs[@]##*/}")
+cp tools/vm tools/vm-smoke tools/vm-smoke-guest "$tmp/smoke/"
+tar -C "$tmp" -cf "$tmp/smoke.tar" smoke
+
+on() { timeout 600 gcloud compute ssh $vm "${at[@]}" --command "$1"; }
+on "rm -rf ~/tacit-vm/smoke && mkdir -p ~/tacit-vm"
+gcloud compute scp "${at[@]}" "$tmp/smoke.tar" $vm:~/tacit-vm/ >/dev/null
+# the run outlasts an ssh session (an update and two restarts): started apart, then waited for
+on "cd ~/tacit-vm && tar -xf smoke.tar && rm smoke.tar && cp smoke/vm vm \
+	&& (setsid nohup bash -c 'cd ~/tacit-vm/smoke && ./vm-smoke --machine $version $previous > run.log 2>&1; echo \$? > done' > /dev/null 2>&1 < /dev/null &)"
+until on "test -f ~/tacit-vm/smoke/done" 2>/dev/null; do sleep 30; done
+on "cat ~/tacit-vm/smoke/run.log"
+gcloud compute scp "${at[@]}" "$vm:~/tacit-vm/smoke/vm-smoke-$version" "$tmp/" >/dev/null \
+	|| { echo "vm-smoke: no record came back from $vm" >&2; exit 1; }
+{ date -Is; echo "tacit $version, from $previous, arch day $(tools/arch-day)"; cat "$tmp/vm-smoke-$version"; } > "$out/vm-smoke-$version"
+echo "recorded: $out/vm-smoke-$version"
+! grep -q '^fail ' "$out/vm-smoke-$version"

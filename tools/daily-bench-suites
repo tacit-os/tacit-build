@@ -1,0 +1,1125 @@
+#!/usr/bin/env python3
+"""tools/daily-bench-suites: the workflow suites' steps inside the test computer (tools/daily-bench --suite ...), beside
+tools/daily-bench-guest, whose helpers they use; run through it (daily-bench-guest <step>). Each step is one thing a
+person does on the way to what they wanted (a recording, a saved slide, a folder open in an editor), judged by its
+outcome. Where the person would click a choice in a dialog (the screen-share picker, a site's camera permission), the
+run makes that one choice and says so; everything after it is the desktop's own path.
+"""
+import glob, http.server, json, math, os, re, socket, struct, subprocess, time, wave, zipfile
+import importlib.machinery, sys
+
+G = importlib.machinery.SourceFileLoader("guest", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                               "daily-bench-guest")).load_module()
+STATE, out, now, ms, Person = G.STATE, G.out, G.now, G.ms, G.Person
+PORT = 8765
+MARK = "Daily4711"          # what the run types into a document; ORIGINAL is what the document held before
+ORIGINAL = "Original1215"
+# the packages Apps gets each app as (assets/store/editorial.json names obs-studio, libreoffice-fresh and code)
+PACKAGES = {"obs": "obs-studio", "libreoffice": "libreoffice-fresh", "vscode": "code", "zed": "zed", "steam": "steam",
+            "discord": "discord"}
+# their menu entries, as the packages name them
+ENTRIES = {"obs": ["com.obsproject.Studio"], "vscode": ["code-oss", "code", "visual-studio-code"], "zed": ["dev.zed.Zed", "zed"],
+           "steam": ["steam"], "discord": ["discord"], "writer": ["libreoffice-writer"]}
+
+
+def entry(app):
+    """the menu entry of an app got from Apps (a bundle's launcher is in the person's own applications folder)"""
+    person = Person()
+    for name in ENTRIES[app]:
+        for d in (f"{person.home}/.local/share/applications", "/usr/share/applications"):
+            if os.path.exists(f"{d}/{name}.desktop"):
+                return f"{d}/{name}.desktop"
+    return None
+
+
+def launch_entry(person, app, *args):
+    e = entry(app)
+    if e:
+        person.spawn(["gio", "launch", e, *args], log=f"{STATE}/{app}.log")
+    return e
+
+
+# ---------------------------------------------------------------- Apps
+
+def step_apps_install(app):
+    """what Apps' Get runs for the app (scripts/store/stored.py install <package>), started in the person's session:
+    a bundle with no password, or pacman through pkexec and the desktop's own password dialog"""
+    person = Person()
+    pkg = PACKAGES[app]
+    log = f"{STATE}/apps-{pkg}.log"
+    open(log, "w").close()
+    os.chmod(log, 0o666)
+    person.spawn(["python3", "-I", f"{person.shell}/scripts/store/stored.py", "install", pkg], log=log)
+    out(ok=True, package=pkg)
+
+
+def step_apps_wait(app):
+    """how the install is going: its last phase, its result once there is one, and whether the desktop asks for the
+    password now (the shell's polkit dialog)"""
+    person, pkg = Person(), PACKAGES[app]
+    lines = []
+    for line in open(f"{STATE}/apps-{pkg}.log", errors="replace"):
+        try:
+            lines.append(json.loads(line))
+        except ValueError:
+            pass
+    result = next((x for x in reversed(lines) if "result" in x), None)
+    phase = next((x.get("phase") for x in reversed(lines) if x.get("phase")), "")
+    ok = bool(result) and result.get("result") == "ok"
+    out(done=result is not None, ok=ok, result=result, phase=phase, password="quickshell:polkit" in person.layers(),
+        entry=entry(app) if ok else None,
+        why=None if ok or not result else f"Apps could not get it: {result.get('result')} {result.get('detail', '')}".strip())
+
+
+# ---------------------------------------------------------------- the screen-share picker and the local pages
+
+def step_picker(what, *args):
+    """the screen-share picker's choice (xdph's custom_picker_binary), made by the run instead of the person's click:
+    `picker window <address>`, `picker screen`, `picker reset` (Tacit's own picker back)"""
+    person = Person()
+    conf = f"{person.home}/.config/hypr/xdph.conf"
+    keep = f"{STATE}/xdph.conf.person"
+    if what == "reset":
+        if os.path.exists(keep):
+            os.replace(keep, conf)
+        elif os.path.exists(f"{STATE}/xdph.conf.none") and os.path.exists(conf):
+            os.remove(conf)
+        for f in (f"{STATE}/xdph.conf.none",):
+            if os.path.exists(f):
+                os.remove(f)
+    else:
+        json.dump({"kind": what, "address": args[0] if args else ""}, open(f"{STATE}/pick.json", "w"))
+        os.chmod(f"{STATE}/pick.json", 0o644)
+        with open(f"{STATE}/pick", "w") as f:
+            f.write(f"#!/bin/sh\nexec /usr/bin/python3 -I {STATE}/daily-bench-guest pick-answer \"$@\"\n")
+        os.chmod(f"{STATE}/pick", 0o755)
+        if not os.path.exists(keep) and not os.path.exists(f"{STATE}/xdph.conf.none"):
+            if os.path.exists(conf):
+                os.replace(conf, keep)
+            else:
+                open(f"{STATE}/xdph.conf.none", "w").close()
+        os.makedirs(os.path.dirname(conf), exist_ok=True)
+        with open(conf, "w") as f:
+            f.write(f"screencopy {{\n    custom_picker_binary = {STATE}/pick\n}}\n")
+        subprocess.run(["chown", f"{person.uid}:", conf])
+    person.run(["systemctl", "--user", "restart", "xdg-desktop-portal-hyprland.service"], 20)
+    out(ok=True)
+
+
+def pick_answer():
+    """run by xdph as its picker: the window or screen pick.json names, in xdph's selection line"""
+    want = json.load(open(f"{STATE}/pick.json"))
+    if want["kind"] == "screen":
+        mons = json.loads(subprocess.run(["hyprctl", "-j", "monitors"], capture_output=True, text=True).stdout or "[]")
+        print(f"[SELECTION]/screen:{mons[0]['name'] if mons else 'Virtual-1'}")
+        return
+    for ent in os.environ.get("XDPH_WINDOW_SHARING_LIST", "").split("[HA>]"):
+        if "[HE>]" not in ent:
+            continue
+        wid, rest = ent.split("[HC>]", 1)
+        f4 = rest.split("[HE>]", 1)[1].strip()
+        try:
+            if int(f4) == int(want["address"], 16):
+                print(f"[SELECTION]/window:{wid.strip()}")
+                return
+        except ValueError:
+            continue
+
+
+class Pages(http.server.SimpleHTTPRequestHandler):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, directory=f"{STATE}/pages", **kw)
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(n)
+        name = re.sub(r"[^A-Za-z0-9._-]", "_", self.path.rsplit("/", 1)[-1]) or "upload"
+        open(f"{STATE}/uploaded-{name}", "wb").write(body)
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+
+PAGES = {
+    "upload.html": """<!doctype html><title>upload</title><input id=f type=file style="width:400px;height:80px">
+<a id=d href="tacit-daily-download-4711.bin" download>download</a>
+<script>f.onchange = () => fetch('/upload/' + f.files[0].name, {method: 'POST', body: f.files[0]}).then(() => document.title = 'sent');</script>""",
+    "notify.html": """<!doctype html><title>messages</title><p>a chat page<script>
+setTimeout(() => new Notification('Tacit Daily', {body: 'a new message 4711'}), 1500);</script>""",
+    "text.html": """<!doctype html><title>text</title><p id=p>copy me 4711</p><textarea id=t></textarea>""",
+    "zoom.html": """<!doctype html><title>zoom</title><p style="font-size:20px">zoom me</p>""",
+    "call.html": """<!doctype html><title>call</title><button id=share style="width:300px;height:80px">share</button><script>
+window.r = {}; const streams = {};      // not window.screen: that name is the browser's own
+async function go(kind, getter) {
+  try { const s = await getter(); window.r[kind] = s.getTracks().map(t => t.readyState); streams[kind] = s; }
+  catch (e) { window.r[kind] = 'error: ' + e.name; }
+}
+go('mic', () => navigator.mediaDevices.getUserMedia({audio: true}));
+go('camera', () => navigator.mediaDevices.getUserMedia({video: true}));
+share.onclick = () => go('screen', () => navigator.mediaDevices.getDisplayMedia({video: true}));
+// the call: the microphone and the screen sent from one peer to another on this page, and what arrives counted
+window.call = async () => {
+  const a = new RTCPeerConnection(), b = new RTCPeerConnection();
+  a.onicecandidate = e => e.candidate && b.addIceCandidate(e.candidate);
+  b.onicecandidate = e => e.candidate && a.addIceCandidate(e.candidate);
+  for (const s of [streams.mic, streams.screen]) if (s) for (const t of s.getTracks()) a.addTrack(t, s);
+  await a.setLocalDescription(await a.createOffer()); await b.setRemoteDescription(a.localDescription);
+  await b.setLocalDescription(await b.createAnswer()); await a.setRemoteDescription(b.localDescription);
+  await new Promise(r => setTimeout(r, 6000));
+  const got = {};
+  (await b.getStats()).forEach(s => { if (s.type === 'inbound-rtp') got[s.kind] = {bytes: s.bytesReceived, frames: s.framesDecoded || 0}; });
+  return JSON.stringify(got);
+};
+</script>""",
+    "ide.html": """<!doctype html><title>ide</title><style>body{margin:0;font:14px monospace}#e{position:absolute;inset:0;
+white-space:pre;outline:none;padding:8px}</style><div id=e contenteditable spellcheck=false></div><script>
+// a web editor's work on each key: the whole file tokenised and drawn again, as a code page does
+const words = 'function const return if else for while let class import export async await'.split(' ');
+let src = ''; for (let i = 0; i < 1500; i++) src += 'const v' + i + ' = function(a, b) { return a + b * ' + i + '; }\\n';
+e.textContent = src; window.paints = [];
+function draw() { const html = e.textContent.split(/(\\s+)/).map(w => words.includes(w) ? '<b>' + w + '</b>' : w).join('');
+  return html.length; }
+e.addEventListener('input', () => { draw(); requestAnimationFrame(() => setTimeout(() =>
+  paints.push(performance.timeOrigin + performance.now()), 0)); });
+e.focus(); const r = document.createRange(); r.selectNodeContents(e); r.collapse(true);
+getSelection().removeAllRanges(); getSelection().addRange(r);
+</script>""",
+    "video.html": """<!doctype html><title>video</title><canvas id=c width=320 height=240></canvas><video id=v loop muted></video><script>
+// a two-second film made here (a canvas recorded), played in a loop: the video the person paused
+const c = document.getElementById('c'), x = c.getContext('2d'), s = c.captureStream(30), rec = new MediaRecorder(s), parts = [];
+let n = 0; setInterval(() => { x.fillStyle = 'hsl(' + (n++ * 7 % 360) + ',80%,50%)'; x.fillRect(0, 0, 320, 240); }, 33);
+rec.ondataavailable = e => parts.push(e.data);
+rec.onstop = () => { v.src = URL.createObjectURL(new Blob(parts, {type: 'video/webm'})); v.play(); document.title = 'ready'; };
+rec.start(); setTimeout(() => rec.stop(), 2000);
+</script>""",
+}
+
+
+def step_serve(what="start"):
+    """the local pages, on 127.0.0.1:8765, kept up beside the run (a page's upload lands in /var/tmp/daily)"""
+    pidf = f"{STATE}/serve.pid"
+    if what == "stop":
+        try:
+            os.kill(int(open(pidf).read()), 15)
+        except (OSError, ValueError):
+            pass
+        out(ok=True)
+    os.makedirs(f"{STATE}/pages", exist_ok=True)
+    for name, text in PAGES.items():
+        open(f"{STATE}/pages/{name}", "w").write(text)
+    open(f"{STATE}/pages/tacit-daily-download-4711.bin", "wb").write(bytes(range(256)) * 512)
+    try:
+        socket.create_connection(("127.0.0.1", PORT), timeout=1).close()
+        out(ok=True, already=True)
+    except OSError:
+        pass
+    p = subprocess.Popen([sys.executable, "-I", f"{STATE}/daily-bench-guest", "serve-forever"], start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    open(pidf, "w").write(str(p.pid))
+    for _ in range(50):
+        try:
+            socket.create_connection(("127.0.0.1", PORT), timeout=1).close()
+            out(ok=True)
+        except OSError:
+            time.sleep(0.1)
+    out(ok=False, why="the local page server did not come up")
+
+
+def serve_forever():
+    http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Pages).serve_forever()
+
+
+def thyris_page(person, url, extra_flags=""):
+    """Thyris (with its DevTools port) on url; the page's DevTools connection"""
+    if not (G.running(person, "thyris") and G.thyris_answers()):
+        G.quit_app(person, "thyris")
+        flags = f"--remote-debugging-port={G.CDP_PORT} --remote-allow-origins=* {extra_flags}".strip()
+        person.spawn([person.which("thyris"), "about:blank"], {"QTWEBENGINE_CHROMIUM_FLAGS": flags})
+        end = now() + 45
+        while now() < end and not G.thyris_answers():
+            time.sleep(0.3)
+    c = G.CDP(G.cdp_page(), timeout=30)
+    c.send("Page.enable")
+    c.send("Runtime.enable")
+    c.events.clear()
+    c.send("Page.navigate", {"url": url})
+    c.wait("Page.loadEventFired", 30)
+    return c
+
+
+def js(c, expr, wait=False):
+    r = c.send("Runtime.evaluate", {"expression": expr, "returnByValue": True, "awaitPromise": wait})
+    return r.get("result", {}).get("result", {}).get("value")
+
+
+def click(c, element_js):
+    """a real click on the element (DevTools' mouse events, the page sees a person's gesture)"""
+    rect = json.loads(js(c, f"JSON.stringify((({element_js}).getBoundingClientRect()))"))
+    x, y = rect["x"] + rect["width"] / 2, rect["y"] + rect["height"] / 2
+    for t in ("mousePressed", "mouseReleased"):
+        c.send("Input.dispatchMouseEvent", {"type": t, "x": x, "y": y, "button": "left", "clickCount": 1})
+
+
+def grant(origin, perms):
+    """the site's permission, as the person's Allow gives it"""
+    c = G.CDP(G.cdp_get("/json/version")["webSocketDebuggerUrl"], timeout=10)
+    r = c.send("Browser.grantPermissions", {"origin": origin, "permissions": perms})
+    c.close()
+    return "error" not in r
+
+
+def focus_thyris(person):
+    w = G.windows(person, "thyris")
+    if w:
+        person.dispatch(f'hl.dsp.focus({{ window = "address:{w[0]["address"]}" }})')
+    return w
+
+
+def sound_playing(person, seconds=15, from_thyris=False):
+    """a playing stream in PipeWire (from Thyris when asked) and the speaker's monitor hearing samples that are not zero"""
+    end = now() + seconds
+    level, streams = 0.0, []
+    while now() < end:
+        o = person.text(["pactl", "-f", "json", "list", "sink-inputs"], 5) or "[]"
+        try:
+            streams = [s for s in json.loads(o) if not s.get("corked") and not s.get("mute")]
+        except ValueError:
+            streams = []
+        if from_thyris:
+            streams = [s for s in streams if G.is_thyris(int(s.get("properties", {}).get("application.process.id", 0) or 0))]
+        if streams:
+            code, raw, _ = person.run(["timeout", "-s", "INT", "0.6", "parec", "--raw", "--latency-msec=20", "--format=s16le",
+                                       "--channels=1", "--rate=16000", "-d", "@DEFAULT_MONITOR@"], 5)
+            n = len(raw) // 2
+            level = max((abs(v) for v in struct.unpack(f"<{n}h", raw[:n * 2])), default=0) / 32768 if n else 0.0
+            if level > 0.01:
+                return True, round(level, 3), [s.get("properties", {}).get("application.name", "?") for s in streams]
+        time.sleep(0.5)
+    return False, round(level, 3), [s.get("properties", {}).get("application.name", "?") for s in streams]
+
+
+# ---------------------------------------------------------------- creator
+
+def luma(img):
+    if not img:
+        return 0.0
+    _, _, d = img
+    vals = [0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2] for i in range(0, len(d) - 2, 3 * 7)]
+    return sum(vals) / len(vals) if vals else 0.0
+
+
+class OBS:
+    """obs-websocket 5 (OBS's own remote control, switched on for the run in its settings), over the guest's WebSocket"""
+
+    def __init__(self):
+        self.c = G.CDP("ws://127.0.0.1:4455/", timeout=10)
+        self.c.message()                                    # Hello
+        self.c._frame(1, json.dumps({"op": 1, "d": {"rpcVersion": 1}}).encode())
+        while self.c.message().get("op") != 2:              # Identified
+            pass
+        self.n = 0
+
+    def call(self, kind, data=None):
+        self.n += 1
+        self.c._frame(1, json.dumps({"op": 6, "d": {"requestType": kind, "requestId": str(self.n), "requestData": data or {}}}).encode())
+        while True:
+            m = self.c.message()
+            if m.get("op") == 7 and m["d"].get("requestId") == str(self.n):
+                if not m["d"]["requestStatus"].get("result"):
+                    raise OSError(f"OBS {kind}: {m['d']['requestStatus']}")
+                return m["d"].get("responseData") or {}
+
+
+def obs_ready(person):
+    """OBS's settings for the run: its remote control on with no password, the first-start wizard passed"""
+    d = f"{person.home}/.config/obs-studio"
+    os.makedirs(f"{d}/plugin_config/obs-websocket", exist_ok=True)
+    json.dump({"alerts_enabled": False, "auth_required": False, "first_load": False, "server_enabled": True,
+               "server_password": "", "server_port": 4455}, open(f"{d}/plugin_config/obs-websocket/config.json", "w"))
+    g = f"{d}/global.ini"
+    if not os.path.exists(g):
+        open(g, "w").write("[General]\nFirstRun=true\n")
+    subprocess.run(["chown", "-R", f"{person.uid}:", d])
+
+
+def frames(path):
+    """one frame a second of a recording, as pictures (ffmpeg, which OBS needs)"""
+    p = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-vf", "fps=1,scale=480:-1", "-f", "image2pipe", "-vcodec", "ppm", "-"],
+                       capture_output=True, timeout=300)
+    data, imgs = p.stdout, []
+    while data.startswith(b"P6"):
+        img = G.parse_ppm(data)
+        if not img:
+            break
+        imgs.append(img)
+        head = data.split(b"\n", 3)
+        data = data[len(b"\n".join(head[:3])) + 1 + img[0] * img[1] * 3:]
+    return imgs
+
+
+def step_creator_record(seconds="60"):
+    """OBS records window B (a window capture through the portal, as OBS's Window Capture (PipeWire) does it) for 60 s
+    while window A has the focus; the recording's frames of B must be as bright as a recording of B with the focus
+    (at least 90 %). Tacit's inactive_opacity made B see-through, and the recording dark, until the pointer went onto it."""
+    person = Person()
+    G.materials()
+    light = f"{STATE}/light.png"
+    if not os.path.exists(light):
+        open(light, "wb").write(G.solid(1200, 900, (225, 225, 225)))
+        os.chmod(light, 0o644)
+    if not entry("obs"):
+        out(ok=False, why="OBS Studio is not installed (Apps did not get it)")
+    obs_ready(person)
+    opacity = (person.hypr("getoption", "decoration:inactive_opacity") or {}).get("float")
+    # B: Viewer showing a light grey picture; A: Settings
+    G.quit_app(person, "viewer")
+    person.spawn([person.which("viewer-open"), light])
+    G.launch(person, "settings")
+    end = now() + 30
+    while now() < end and not (G.windows(person, "viewer") and G.windows(person, "settings")):
+        time.sleep(0.3)
+    b, a = G.windows(person, "viewer"), G.windows(person, "settings")
+    if not (a and b):
+        out(ok=False, why="Viewer and Settings did not both open")
+    b, a = b[0]["address"], a[0]["address"]
+    subprocess.run([sys.executable, "-I", f"{STATE}/daily-bench-guest", "picker", "window", b], capture_output=True)
+    launch_entry(person, "obs")
+    obs, end = None, now() + 60
+    while obs is None and now() < end:
+        try:
+            obs = OBS()
+        except (OSError, ValueError):
+            time.sleep(1)
+    if obs is None:
+        out(ok=False, why="OBS did not start, or its remote control did not answer")
+    focus = lambda addr: person.dispatch(f'hl.dsp.focus({{ window = "address:{addr}" }})')
+    try:
+        scene = obs.call("GetCurrentProgramScene")["currentProgramSceneName"]
+        obs.call("CreateInput", {"sceneName": scene, "inputName": "Tacit Daily window", "inputKind": "pipewire-window-capture-source",
+                                 "inputSettings": {}, "sceneItemEnabled": True})
+        end, live = now() + 30, False
+        while now() < end and not live:
+            time.sleep(1)
+            try:
+                shot = obs.call("GetSourceScreenshot", {"sourceName": "Tacit Daily window", "imageFormat": "png", "imageWidth": 160})
+                live = len(shot.get("imageData", "")) > 2000
+            except OSError:
+                pass
+        if not live:
+            out(ok=False, opacity=opacity, why="OBS's window capture showed nothing (the portal or PipeWire gave it no picture)")
+        rec = {}
+        for name, addr, secs in (("in use", b, 8), ("not in use", a, int(seconds))):
+            focus(addr)
+            time.sleep(1)
+            obs.call("StartRecord")
+            time.sleep(secs)
+            rec[name] = obs.call("StopRecord").get("outputPath", "")
+        obs.call("RemoveInput", {"inputName": "Tacit Daily window"})
+    except OSError as e:
+        out(ok=False, opacity=opacity, why=str(e))
+    finally:
+        subprocess.run([sys.executable, "-I", f"{STATE}/daily-bench-guest", "picker", "reset"], capture_output=True)
+    lum = {name: brightness(path) for name, path in rec.items()}
+    for p in rec.values():
+        if p and os.path.exists(p):
+            os.remove(p)
+    for app in ("viewer", "settings"):
+        G.quit_app(person, app)
+    subprocess.run(["pkill", "-u", str(person.uid), "-x", "obs"])
+    if not lum.get("in use") or lum.get("not in use") is None:
+        out(ok=False, opacity=opacity, why="the recordings could not be read (ffmpeg)")
+    ratio = lum["not in use"] / lum["in use"]
+    why = dark(ratio, opacity)
+    out(ok=why is None, ratio=round(ratio, 3), luma=lum, opacity=opacity, why=why)
+
+
+def brightness(path):
+    """the median brightness of a recording's frames, or None when it cannot be read"""
+    fs = frames(path) if path and os.path.exists(path) else []
+    return sorted(luma(f) for f in fs)[len(fs) // 2] if fs else None
+
+
+def dark(ratio, opacity):
+    """why the recording of the window not in use is too dark (under 90 % of it in use), or None"""
+    if ratio >= 0.9:
+        return None
+    return (f"the window not in use came out at {ratio:.0%} of its brightness in use "
+            f"(Hyprland's inactive_opacity is {opacity}): the recording is dark")
+
+
+YOUTUBE = "https://www.youtube.com/watch?v=aqz-KE-bpKQ"     # Big Buck Bunny, the Blender Foundation's, 10 min 34 s
+
+
+def step_creator_youtube(seconds="600"):
+    """a 10-minute YouTube video played in Thyris: frames dropped (the page's own count), the processor Thyris used,
+    and sound from Thyris in the speaker"""
+    person, seconds = Person(), float(seconds)
+    G.quit_app(person, "thyris")
+    c = thyris_page(person, "about:blank", "--autoplay-policy=no-user-gesture-required")
+    for name, value in (("CONSENT", "YES+cb"), ("SOCS", "CAISNQgQEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjQwMTA5LjA3X3AwGgJlbiACGgYIgLC_rQY")):
+        c.send("Network.setCookie", {"name": name, "value": value, "domain": ".youtube.com", "path": "/"})
+    c.events.clear()
+    c.send("Page.navigate", {"url": YOUTUBE})
+    c.wait("Page.loadEventFired", 60)
+    focus_thyris(person)
+    probe = ("(() => { const v = document.querySelector('video'); if (!v) return null; if (v.paused) v.play();"
+             "const q = v.getVideoPlaybackQuality(); return JSON.stringify({t: v.currentTime, paused: v.paused,"
+             "dropped: q.droppedVideoFrames, total: q.totalVideoFrames, h: v.videoHeight}); })()")
+    start, first = None, None
+    end = now() + 60
+    while now() < end and first is None:
+        v = js(c, probe)
+        if v and json.loads(v)["t"] > 0.5:
+            first = json.loads(v)
+            start = now()
+        time.sleep(1)
+    if first is None:
+        out(ok=False, why="the video did not start playing within a minute")
+    roots = G.tree([p for p in G.pids() if G.is_thyris(p)])
+    t0 = G.ticks(roots)[0]
+    sound, level, _ = sound_playing(person, 20, from_thyris=True)
+    last = first
+    while now() < start + seconds:
+        time.sleep(min(30, max(0, start + seconds - now())))
+        v = js(c, probe)
+        if v:
+            last = json.loads(v)
+    elapsed = now() - start
+    cpu = (G.ticks(roots & G.tree([p for p in G.pids() if G.is_thyris(p)]))[0] - t0) / os.sysconf("SC_CLK_TCK") / elapsed * 100
+    c.close()
+    G.quit_app(person, "thyris")
+    played = last["t"] - first["t"]
+    frames_ = max(1, last["total"] - first["total"])
+    dropped = (last["dropped"] - first["dropped"]) / frames_ * 100
+    why = []
+    if played < 0.9 * elapsed:
+        why.append(f"it played {played:.0f} s of the {elapsed:.0f} s (it stalled)")
+    if not sound:
+        why.append(f"no sound from Thyris (loudest sample {level})")
+    if dropped > 10:
+        why.append(f"{dropped:.0f} % of its frames were dropped")
+    out(ok=not why, dropped_pct=round(dropped, 2), cpu_pct=round(cpu, 1), played_s=round(played), height=last.get("h"),
+        sound_level=level, why="; ".join(why) or None)
+
+
+def step_creator_upload_start():
+    """a page's file picker opened by a click (the portal: Tacit's Files, in its pick mode); the file to send is in the
+    person's Downloads"""
+    person = Person()
+    dl = f"{person.home}/Downloads"
+    os.makedirs(dl, exist_ok=True)
+    open(f"{dl}/tacit-daily-upload-4711.txt", "w").write("Tacit Daily upload 4711\n" * 100)
+    subprocess.run(["chown", "-R", f"{person.uid}:", dl])
+    for f in glob.glob(f"{STATE}/uploaded-*"):
+        os.remove(f)
+    c = thyris_page(person, f"http://127.0.0.1:{PORT}/upload.html")
+    focus_thyris(person)
+    before = {w["address"] for w in person.clients()}
+    click(c, "document.getElementById('f')")
+    c.close()
+    end = now() + 20
+    while now() < end:
+        new = [w for w in person.clients() if w["address"] not in before]
+        if new:
+            out(ok=True, picker=f"{new[0].get('class')}: {new[0].get('title')}")
+        time.sleep(0.3)
+    out(ok=False, why="no file picker opened from the page's Choose file")
+
+
+def step_creator_upload_done():
+    """after the person typed the file's name in the picker and pressed Enter: the page sent it, byte for byte"""
+    person = Person()
+    want = open(f"{person.home}/Downloads/tacit-daily-upload-4711.txt", "rb").read()
+    end = now() + 20
+    while now() < end:
+        got = glob.glob(f"{STATE}/uploaded-*")
+        if got:
+            same = open(got[0], "rb").read() == want
+            out(ok=same, why=None if same else "the file arrived changed")
+        time.sleep(0.3)
+    out(ok=False, why="nothing was sent: the picker did not hand the file to the page")
+
+
+def step_creator_download(what="click"):
+    """a page's download link clicked: the file lands in Downloads, byte for byte (a Save dialog, if one comes, is
+    answered with Enter: tools/daily-bench presses it when this says so, then asks again with "wait")"""
+    person = Person()
+    dl = f"{person.home}/Downloads/tacit-daily-download-4711.bin"
+    want = open(f"{STATE}/pages/tacit-daily-download-4711.bin", "rb").read()
+    asked = what == "wait"
+    if not asked:
+        if os.path.exists(dl):
+            os.remove(dl)
+        c = thyris_page(person, f"http://127.0.0.1:{PORT}/upload.html")
+        focus_thyris(person)
+        click(c, "document.getElementById('d')")
+        c.close()
+    end = now() + 30
+    while now() < end:
+        if os.path.exists(dl) and os.path.getsize(dl) == len(want):
+            same = open(dl, "rb").read() == want
+            out(ok=same, asked=asked, why=None if same else "the download arrived changed")
+        if "quickshell:saveAs" in person.layers() and not asked:
+            out(ok=False, save_dialog=True, why="a Save dialog is waiting")
+        time.sleep(0.3)
+    out(ok=False, why="nothing arrived in Downloads")
+
+
+def step_creator_audio_place():
+    """a voice note as one received in WhatsApp Web: a WAV in Downloads, its name the thing searched for"""
+    person = Person()
+    dl = f"{person.home}/Downloads"
+    os.makedirs(dl, exist_ok=True)
+    path = f"{dl}/tacit-daily-voice-4711.wav"
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(b"".join(struct.pack("<h", int(12000 * math.sin(2 * math.pi * 440 * i / 16000))) for i in range(16000 * 20)))
+    subprocess.run(["chown", "-R", f"{person.uid}:", dl])
+    out(ok=True, path=path)
+
+
+def step_creator_audio_playing():
+    """after the search for "voice-4711" and Enter: something plays it, and the speaker hears it"""
+    person = Person()
+    ok, level, names = sound_playing(person, 20)
+    out(ok=ok, level=level, players=names, why=None if ok else "the search's Enter played nothing")
+
+
+# ---------------------------------------------------------------- office and student
+
+OFFICE = {"docx": ("libreoffice-writer", "word/document.xml"), "xlsx": ("libreoffice-calc", "xl/sharedStrings.xml"),
+          "pptx": ("libreoffice-impress", "ppt/slides/slide1.xml")}
+
+
+def lo_profile(person):
+    """LibreOffice's settings before its first start: no tip of the day, and no question on keeping a Microsoft format
+    (a person ticks it away once); the save keeps the file's own format"""
+    d = f"{person.home}/.config/libreoffice/4/user"
+    f = f"{d}/registrymodifications.xcu"
+    if os.path.exists(f):
+        return
+    os.makedirs(d, exist_ok=True)
+    item = lambda path, prop, v: (f'<item oor:path="{path}"><prop oor:name="{prop}" oor:op="fuse"><value>{v}</value>'
+                                  f'</prop></item>')
+    open(f, "w").write('<?xml version="1.0" encoding="UTF-8"?>\n<oor:items xmlns:oor="http://openoffice.org/2001/registry" '
+                       'xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+                       + item("/org.openoffice.Office.Common/Misc", "ShowTipOfTheDay", "false")
+                       + item("/org.openoffice.Office.Common/Save/Document", "WarnAlienFormat", "false")
+                       + "</oor:items>\n")
+    subprocess.run(["chown", "-R", f"{person.uid}:", f"{person.home}/.config/libreoffice"])
+
+
+def step_office_make():
+    """a .docx, an .xlsx and a .pptx, each holding the word Original1215, made by LibreOffice itself (headless, a profile
+    of its own) in the person's Documents"""
+    person = Person()
+    lo_profile(person)
+    src, docs = f"{STATE}/office-src", f"{person.home}/Documents/tacit-daily"
+    os.makedirs(src, exist_ok=True)
+    os.makedirs(docs, exist_ok=True)
+    open(f"{src}/doc.html", "w").write(f"<html><body><p>{ORIGINAL}</p></body></html>")
+    open(f"{src}/sheet.csv", "w").write(f"{ORIGINAL}\n")
+    open(f"{src}/slides.fodp", "w").write(
+        '<?xml version="1.0" encoding="UTF-8"?><office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+        'xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" '
+        'xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" office:version="1.3" '
+        'office:mimetype="application/vnd.oasis.opendocument.presentation"><office:body><office:presentation>'
+        '<draw:page draw:name="1"><draw:frame svg:x="2cm" svg:y="2cm" svg:width="20cm" svg:height="3cm">'
+        f'<draw:text-box><text:p>{ORIGINAL}</text:p></draw:text-box></draw:frame></draw:page>'
+        '</office:presentation></office:body></office:document>')
+    subprocess.run(["chown", "-R", f"{person.uid}:", src, docs])
+    made, why = [], []
+    for name, filt, kind in (("doc.html", "docx:MS Word 2007 XML", "docx"), ("sheet.csv", "xlsx:Calc MS Excel 2007 XML", "xlsx"),
+                             ("slides.fodp", "pptx:Impress MS PowerPoint 2007 XML", "pptx")):
+        person.run(["soffice", f"-env:UserInstallation=file://{STATE}/lo-make", "--headless", "--convert-to", filt,
+                    "--outdir", docs, f"{src}/{name}"], 120)
+        target = f"{docs}/{os.path.splitext(name)[0]}.{kind}"
+        if os.path.exists(target):
+            os.replace(target, f"{docs}/tacit-daily.{kind}")
+            made.append(kind)
+        else:
+            why.append(f"LibreOffice could not make the .{kind}")
+    out(ok=not why, made=made, why="; ".join(why) or None)
+
+
+def office_file(person, kind):
+    return f"{person.home}/Documents/tacit-daily/tacit-daily.{kind}"
+
+
+def office_windows(person, kind):
+    return [c for c in person.clients() if f"tacit-daily.{kind}" in c.get("title", "")]
+
+
+def step_office_open(kind):
+    """the document opened as a double click in Files opens it (its default app), until its window is there"""
+    person = Person()
+    f = office_file(person, kind)
+    t0 = now()
+    person.spawn(["xdg-open", f])
+    while now() < t0 + 90:
+        w = office_windows(person, kind)
+        if w:
+            person.dispatch(f'hl.dsp.focus({{ window = "address:{w[0]["address"]}" }})')
+            time.sleep(3)        # the document drawn and the cursor in it
+            out(ok=True, open_ms=ms(t0, now()) - 3000, mtime=os.path.getmtime(f))
+        time.sleep(0.3)
+    out(ok=False, why=f"the .{kind} did not open in LibreOffice within 90 s")
+
+
+def holds(path, member, *words):
+    try:
+        text = zipfile.ZipFile(path).read(member).decode(errors="replace")
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return []
+    return [w for w in words if w in text]
+
+
+def step_office_saved(kind, mtime):
+    """after the person typed Daily4711 and Ctrl+S: the file was written, in its own format, holding both words; its
+    window is closed"""
+    person = Person()
+    f = office_file(person, kind)
+    end = now() + 30
+    while now() < end and os.path.getmtime(f) <= float(mtime):
+        time.sleep(0.3)
+    has = holds(f, OFFICE[kind][1], ORIGINAL, MARK)
+    for w in office_windows(person, kind):
+        person.dispatch(f'hl.dsp.focus({{ window = "address:{w["address"]}" }})')
+        person.dispatch("hl.dsp.window.close()")
+    why = []
+    if os.path.getmtime(f) <= float(mtime):
+        why.append("Ctrl+S did not save it")
+    elif len(has) < 2:
+        why.append(f"the saved .{kind} holds {has or 'neither word'}, not both {ORIGINAL} and {MARK}")
+    out(ok=not why, why="; ".join(why) or None)
+
+
+def step_office_reopen(kind):
+    """the saved document opened again: it opens, still holding what was typed"""
+    person = Person()
+    time.sleep(3)
+    subprocess.run(["pkill", "-u", str(person.uid), "-f", "soffice.bin"])
+    time.sleep(2)
+    person.spawn(["xdg-open", office_file(person, kind)])
+    end = now() + 90
+    while now() < end and not office_windows(person, kind):
+        time.sleep(0.3)
+    opened = bool(office_windows(person, kind))
+    subprocess.run(["pkill", "-u", str(person.uid), "-f", "soffice.bin"])
+    has = holds(office_file(person, kind), OFFICE[kind][1], MARK)
+    out(ok=opened and bool(has), why=None if opened and has else ("it did not open again" if not opened else "the word typed is gone"))
+
+
+def step_office_viewer(page):
+    """a two-page PDF read in Viewer: page 1 (cyan) shows when it opens, page 2 (yellow) after Page Down"""
+    person = Person()
+    pdf2 = f"{STATE}/two-pages.pdf"
+    if not os.path.exists(pdf2):
+        open(pdf2, "wb").write(two_page_pdf())
+        os.chmod(pdf2, 0o644)
+    colour = (0, 255, 255) if page == "1" else (255, 255, 0)
+    if page == "1":
+        G.quit_app(person, "viewer")
+        person.spawn([person.which("viewer-open"), pdf2])
+    end, frac = now() + 20, 0.0
+    while now() < end:
+        frac = G.fraction(person.shot(), G.near(colour), step=1)
+        if frac >= 0.2:
+            if page == "2":
+                G.quit_app(person, "viewer")
+            out(ok=True, share=round(frac, 3))
+        time.sleep(0.3)
+    if page == "2":
+        G.quit_app(person, "viewer")
+    out(ok=False, why=f"page {page} did not show (its colour on {frac:.0%} of the screen)")
+
+
+def two_page_pdf():
+    pages = []
+    for c in ((0, 1, 1), (1, 1, 0)):
+        pages.append(f"{c[0]} {c[1]} {c[2]} rg 0 0 595 842 re f".encode())
+    objs = [b"<< /Type /Catalog /Pages 2 0 R >>", b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>"]
+    for i, p in enumerate(pages):
+        objs.append(b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents %d 0 R >>" % (4 + 2 * i))
+        objs.append(b"<< /Length %d >>\nstream\n" % len(p) + p + b"\nendstream")
+    body, offsets = b"%PDF-1.4\n", []
+    for n, o in enumerate(objs, 1):
+        offsets.append(len(body))
+        body += b"%d 0 obj\n" % n + o + b"\nendobj\n"
+    xref = len(body)
+    body += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1) + b"".join(b"%010d 00000 n \n" % o for o in offsets)
+    return body + b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)
+
+
+def step_office_call():
+    """a WebRTC call on a local page in Thyris: the microphone and the screen (the share picker's choice made by the
+    run) sent through a call between two peers on the page; what arrives is counted. The camera: none in the VM."""
+    person = Person()
+    subprocess.run([sys.executable, "-I", f"{STATE}/daily-bench-guest", "picker", "screen"], capture_output=True)
+    origin = f"http://127.0.0.1:{PORT}"
+    G.quit_app(person, "thyris")
+    c = thyris_page(person, "about:blank")
+    granted = grant(origin, ["audioCapture", "videoCapture", "displayCapture"])
+    c.events.clear()
+    c.send("Page.navigate", {"url": f"{origin}/call.html"})
+    c.wait("Page.loadEventFired", 30)
+    focus_thyris(person)
+    time.sleep(3)
+    click(c, "document.getElementById('share')")
+    end = now() + 30
+    while now() < end and "screen" not in json.loads(js(c, "JSON.stringify(window.r)") or "{}"):
+        time.sleep(0.5)
+    r = json.loads(js(c, "JSON.stringify(window.r)") or "{}")
+    got = json.loads(js(c, "window.call()", wait=True) or "{}")
+    c.close()
+    subprocess.run([sys.executable, "-I", f"{STATE}/daily-bench-guest", "picker", "reset"], capture_output=True)
+    G.quit_app(person, "thyris")
+    why = []
+    if r.get("mic") != ["live"]:
+        why.append(f"the microphone: {r.get('mic')}")
+    if r.get("screen") != ["live"]:
+        why.append(f"the screen share: {r.get('screen')}")
+    if not got.get("audio", {}).get("bytes"):
+        why.append("no sound arrived through the call")
+    if not got.get("video", {}).get("frames"):
+        why.append("no picture of the screen arrived through the call")
+    out(ok=not why, tracks=r, arrived=got, granted=granted, camera=r.get("camera"), why="; ".join(why) or None)
+
+
+def step_office_zoom(what):
+    """the page's zoom (its devicePixelRatio) before and after the person's Ctrl+scroll"""
+    person = Person()
+    if what == "before":
+        G.quit_app(person, "thyris")
+        c = thyris_page(person, f"http://127.0.0.1:{PORT}/zoom.html")
+        focus_thyris(person)
+        w = G.windows(person, "thyris")[0]
+        r = js(c, "window.devicePixelRatio")
+        c.close()
+        out(ok=True, ratio=r, x=w["at"][0] + w["size"][0] // 2, y=w["at"][1] + w["size"][1] // 2)
+    c = G.CDP(G.cdp_page(), timeout=10)
+    r = js(c, "window.devicePixelRatio")
+    c.close()
+    G.quit_app(person, "thyris")
+    out(ok=True, ratio=r)
+
+
+# ---------------------------------------------------------------- developer
+
+def step_dev_open_folder(app):
+    """a folder opened from Files with the editor: Files' Open with lists it for a folder (its menu entry takes
+    inode/directory), and what Files then runs (gio launch <entry> <folder>) opens the folder in it"""
+    person = Person()
+    e = entry(app)
+    if not e:
+        out(ok=False, why=f"{app} is not installed (Apps did not get it)")
+    folder = f"{person.home}/tacit-daily-project"
+    os.makedirs(folder, exist_ok=True)
+    open(f"{folder}/README.md", "w").write("# tacit-daily-project\n")
+    subprocess.run(["chown", "-R", f"{person.uid}:", folder])
+    listed = bool(re.search(r"^MimeType=(.*;)?inode/directory(;|$)", open(e).read(), re.M))
+    before = {w["address"] for w in person.clients()}
+    t0 = now()
+    person.spawn(["gio", "launch", e, folder], log=f"{STATE}/{app}.log")
+    seen = None
+    while now() < t0 + 90 and seen is None:
+        new = [w for w in person.clients() if w["address"] not in before]
+        seen = next((w for w in new if "tacit-daily-project" in w.get("title", "")), None)
+        time.sleep(0.5)
+    for w in [w for w in person.clients() if w["address"] not in before]:
+        person.dispatch(f'hl.dsp.focus({{ window = "address:{w["address"]}" }})')
+        person.dispatch("hl.dsp.window.close()")
+    why = []
+    if not listed:
+        why.append("Files' Open with does not offer it for a folder (its menu entry does not take folders)")
+    if not seen:
+        why.append("it did not open the folder (no window named after it)")
+    out(ok=not why, open_ms=ms(t0, now()) if seen else None, listed=listed, why="; ".join(why) or None)
+
+
+PROJECT = {"Makefile": "all: hello\nhello: hello.c\n\tcc -O2 -o hello hello.c\ntest: hello\n\t./test.sh\n",
+           "hello.c": '#include <stdio.h>\nint add(int a, int b) { return a + b; }\nint main(void) { printf("%d\\n", add(2, 2)); return 0; }\n',
+           "test.sh": '#!/bin/sh\n[ "$(./hello)" = 4 ] && echo "ok 1 add" || { echo "not ok 1 add"; exit 1; }\n'}
+
+
+def step_dev_terminal():
+    """in a terminal (foot, Tacit's own): git clone of a small project, its build and its tests; the clone is from a
+    repository on this computer, so the network is not in it"""
+    person = Person()
+    src, work = f"{STATE}/project.git", f"{person.home}/tacit-daily-build"
+    if not os.path.exists(src):
+        tmp = f"{STATE}/project-src"
+        os.makedirs(tmp, exist_ok=True)
+        for n, t in PROJECT.items():
+            open(f"{tmp}/{n}", "w").write(t)
+        os.chmod(f"{tmp}/test.sh", 0o755)
+        g = lambda *a: subprocess.run(["git", "-C", tmp, "-c", "user.name=Tacit Daily", "-c", "user.email=daily@tacitos.co", *a], capture_output=True)
+        g("init", "-q")
+        g("add", ".")
+        g("commit", "-qm", "a small project")
+        subprocess.run(["git", "clone", "-q", "--bare", tmp, src], capture_output=True)
+        subprocess.run(["chmod", "-R", "a+rX", STATE])
+    status, said_f = f"{work}.status", f"{work}.out"
+    subprocess.run(["rm", "-rf", work, status, said_f])
+    script = f"cd ~ && git clone -q {src} {work} && cd {work} && make && make test > {said_f} 2>&1; echo $? > {status}"
+    t0 = now()
+    person.spawn(["foot", "-e", "sh", "-c", script])
+    while now() < t0 + 120 and not os.path.exists(status):
+        time.sleep(0.5)
+    code = open(status).read().strip() if os.path.exists(status) else None
+    said = open(said_f).read() if os.path.exists(said_f) else ""
+    tools = [t for t in ("git", "make", "cc") if subprocess.run(["which", t], capture_output=True).returncode]
+    ok = code == "0" and "ok 1 add" in said
+    out(ok=ok, seconds=round(now() - t0, 1), missing=tools,
+        why=None if ok else (f"a fresh Tacit has no {', '.join(tools)}" if tools else f"the build or its test failed: {said[-200:]}"))
+
+
+def step_dev_theme(app):
+    """whether the editor wears Tacit's colours: Code takes the theme matugen writes for it
+    (~/.vscode-oss/extensions/martida-theme) when it is selected; its window's ground is compared with that theme's;
+    Zed has no theme from Tacit"""
+    person = Person()
+    if app != "vscode":
+        out(ok=False, why="Tacit writes no theme for Zed (matugen's templates have none)")
+    theme = f"{person.home}/.vscode-oss/extensions/martida-theme/themes/martida-color-theme.json"
+    try:
+        bg = json.load(open(theme)).get("colors", {}).get("editor.background", "")
+    except (OSError, ValueError):
+        out(ok=False, why="Tacit's theme for Code is not there (~/.vscode-oss/extensions/martida-theme)")
+    try:
+        chosen = json.load(open(f"{person.home}/.config/Code - OSS/User/settings.json")).get("workbench.colorTheme", "")
+    except (OSError, ValueError):
+        chosen = ""
+    out(ok="martida" in chosen.lower(), theme_background=bg, chosen=chosen or None,
+        why=None if "martida" in chosen.lower() else f"Code does not use it (its theme is {chosen or 'the default'})")
+
+
+def step_dev_ide(what):
+    """a web editor's page in Thyris (a stand-in for a Codespaces-style IDE: the whole file drawn again on each key):
+    the time from a key reaching this computer to the page drawing it, for each typed key"""
+    person = Person()
+    if what == "start":
+        G.quit_app(person, "thyris")
+        c = thyris_page(person, f"http://127.0.0.1:{PORT}/ide.html")
+        focus_thyris(person)
+        c.close()
+        subprocess.run([sys.executable, "-I", f"{STATE}/daily-bench-guest", "arm-typing", "ide"], capture_output=True)
+        out(ok=True)
+    end = now() + 40
+    while now() < end and not os.path.exists(f"{STATE}/typing-ide.json"):
+        time.sleep(0.3)
+    c = G.CDP(G.cdp_page(), timeout=10)
+    paints = js(c, "JSON.stringify(window.paints)")
+    c.close()
+    G.quit_app(person, "thyris")
+    try:
+        keys = json.load(open(f"{STATE}/typing-ide.json"))
+    except (OSError, ValueError):
+        keys = {"presses": [], "offset": 0}
+    paints = json.loads(paints or "[]")
+    lat = []
+    for k in keys["presses"]:
+        wall = (k + keys["offset"]) * 1000
+        after = [p for p in paints if p >= wall]
+        if after and after[0] - wall < 2000:
+            lat.append(round(after[0] - wall, 1))
+    out(ok=len(lat) >= max(1, len(keys["presses"]) // 2), latency_ms=lat, keys=len(keys["presses"]), painted=len(paints),
+        why=None if lat else "the page drew none of the typed keys")
+
+
+# ---------------------------------------------------------------- gamer
+
+def step_gamer_steam():
+    """Steam started from its menu entry until its window shows (its sign-in, or its own update first); playing a game
+    needs the account and a graphics card (HARDWARE-DAILY.md)"""
+    person = Person()
+    if not launch_entry(person, "steam"):
+        out(ok=False, why="Steam is not installed (Apps did not get it)")
+    t0 = now()
+    while now() < t0 + 300:
+        w = [c for c in person.clients() if "steam" in c.get("class", "").lower()]
+        if w:
+            subprocess.run(["pkill", "-u", str(person.uid), "-x", "steam"])
+            out(ok=True, open_s=round(now() - t0, 1), title=w[0].get("title"))
+        time.sleep(1)
+    subprocess.run(["pkill", "-u", str(person.uid), "-x", "steam"])
+    out(ok=False, why="Steam showed no window within 5 minutes")
+
+
+def step_gamer_discord():
+    """Discord started, its window closed: it keeps running in the background, and Activity (its own sampler) shows it"""
+    person = Person()
+    if not launch_entry(person, "discord"):
+        out(ok=False, why="Discord is not installed (Apps did not get it)")
+    t0 = now()
+    w = []
+    while now() < t0 + 120 and not w:
+        w = [c for c in person.clients() if "discord" in c.get("class", "").lower()]
+        time.sleep(1)
+    if not w:
+        out(ok=False, why="Discord showed no window within 2 minutes")
+    for c in w:
+        person.dispatch(f'hl.dsp.focus({{ window = "address:{c["address"]}" }})')
+        person.dispatch("hl.dsp.window.close()")
+    time.sleep(5)
+    alive = subprocess.run(["pgrep", "-u", str(person.uid), "-if", "discord"], capture_output=True).returncode == 0
+    code, o, _ = person.run(["timeout", "8", "python3", "-I", f"{person.shell}/scripts/activity/sample.py"], 12)
+    shown = "discord" in o.decode(errors="replace").lower()
+    subprocess.run(["pkill", "-u", str(person.uid), "-if", "discord"])
+    why = [w for w, bad in (("Discord quit when its window closed", not alive), ("Activity does not show it", alive and not shown)) if bad]
+    out(ok=not why, why="; ".join(why) or None)
+
+
+def step_gamer_fullscreen(what):
+    """a fullscreen window (Thyris after F11) left with Alt+Tab and come back to: fullscreen again, and it answers"""
+    person = Person()
+    if what == "start":
+        G.quit_app(person, "thyris")
+        G.launch(person, "settings")        # the window Alt+Tab goes to
+        c = thyris_page(person, f"http://127.0.0.1:{PORT}/zoom.html")
+        c.close()
+        focus_thyris(person)
+        out(ok=bool(G.windows(person, "thyris")))
+    w = G.windows(person, "thyris")
+    fs = bool(w and w[0].get("fullscreen"))
+    active = (person.hypr("activewindow") or {}).get("address")
+    if what == "full":
+        out(ok=fs, why=None if fs else "F11 did not make Thyris fullscreen")
+    if what == "away":
+        out(ok=bool(w) and active != w[0]["address"], why=None if active != (w[0]["address"] if w else "") else "Alt+Tab did not leave it")
+    back = bool(w) and active == w[0]["address"] and fs and G.thyris_answers()
+    G.quit_app(person, "thyris")
+    G.quit_app(person, "settings")
+    out(ok=back, why=None if back else "Alt+Tab back did not bring it back fullscreen and answering")
+
+
+# ---------------------------------------------------------------- everyday
+
+def step_everyday_notify():
+    """a messaging page's Web Notification (a stand-in for WhatsApp Web or Discord, which need accounts): the shell
+    shows it"""
+    person = Person()
+    origin = f"http://127.0.0.1:{PORT}"
+    G.quit_app(person, "thyris")
+    c = thyris_page(person, "about:blank")
+    grant(origin, ["notifications"])
+    ev = G.Events(person)
+    t0 = now()
+    c.send("Page.navigate", {"url": f"{origin}/notify.html"})
+    t, _ = ev.wait(lambda line: line == "openlayer>>quickshell:notificationPopup", 15, after=t0)
+    c.close()
+    G.quit_app(person, "thyris")
+    out(ok=t is not None, shown_ms=ms(t0, t) - 1500 if t else None,
+        why=None if t else "the page's notification did not show")
+
+
+def step_everyday_screenshot(what):
+    """Ctrl+Print: a picture of the whole screen saved in Pictures/Screenshots and put on the clipboard"""
+    person = Person()
+    d = person.text(["xdg-user-dir", "PICTURES"]) or f"{person.home}/Pictures"
+    d += "/Screenshots"
+    if what == "before":
+        out(ok=True, have=len(glob.glob(f"{d}/*.png")))
+    time.sleep(2)
+    shots = sorted(glob.glob(f"{d}/*.png"), key=os.path.getmtime)
+    why = []
+    new = shots[-1] if shots and os.path.getmtime(shots[-1]) > time.time() - 30 else None
+    size = None
+    if not new:
+        why.append("no new picture in Pictures/Screenshots")
+    else:
+        head = open(new, "rb").read(24)
+        size = struct.unpack(">II", head[16:24]) if head[:8] == b"\x89PNG\r\n\x1a\n" else None
+        if not size or size[0] < 1000:
+            why.append(f"the picture is not a screen's ({size})")
+    types = person.text(["wl-paste", "--list-types"]) or ""
+    if "image/png" not in types:
+        why.append("the clipboard does not hold it")
+    out(ok=not why, size=size, why="; ".join(why) or None)
+
+
+def step_everyday_clipboard(what):
+    """text selected in a page and copied (Ctrl+C), then pasted (Ctrl+V) into the page's box: the same text both ways"""
+    person = Person()
+    if what == "start":
+        G.quit_app(person, "thyris")
+        c = thyris_page(person, f"http://127.0.0.1:{PORT}/text.html")
+        focus_thyris(person)
+        js(c, "(() => { const r = document.createRange(); r.selectNodeContents(document.getElementById('p'));"
+              "getSelection().removeAllRanges(); getSelection().addRange(r); })()")
+        c.close()
+        out(ok=True)
+    if what == "copied":
+        got = person.text(["wl-paste", "--no-newline"]) or ""
+        c = G.CDP(G.cdp_page(), timeout=10)
+        js(c, "document.getElementById('t').focus()")
+        c.close()
+        out(ok=got.strip() == "copy me 4711", got=got[:80], why=None if got.strip() == "copy me 4711" else f"the clipboard holds {got[:80]!r}")
+    c = G.CDP(G.cdp_page(), timeout=10)
+    v = js(c, "document.getElementById('t').value") or ""
+    c.close()
+    G.quit_app(person, "thyris")
+    out(ok=v.strip() == "copy me 4711", why=None if v.strip() == "copy me 4711" else f"the paste gave {v[:80]!r}")
+
+
+def step_everyday_emoji():
+    """after Super+Period, "grinning" typed and Enter: an emoji on the clipboard, as the palette's emoji search gives it"""
+    person = Person()
+    time.sleep(1)
+    got = person.text(["wl-paste", "--no-newline"]) or ""
+    ok = any(ord(ch) >= 0x1F300 for ch in got)
+    out(ok=ok, got=got[:8], why=None if ok else f"no emoji on the clipboard ({got[:20]!r})")
+
+
+def step_everyday_video(what):
+    """a video in Thyris, paused, across a sleep: after the wake it is still paused where it was, and plays again"""
+    person = Person()
+    if what == "start":
+        G.quit_app(person, "thyris")
+        c = thyris_page(person, f"http://127.0.0.1:{PORT}/video.html")
+        focus_thyris(person)
+        end = now() + 15
+        while now() < end and js(c, "document.title") != "ready":
+            time.sleep(0.3)
+        time.sleep(2)
+        t = js(c, "(() => { const v = document.getElementById('v'); v.pause(); return v.currentTime; })()")
+        c.close()
+        open(f"{STATE}/video.json", "w").write(json.dumps({"t": t}))
+        out(ok=t is not None and t > 0, at=t, why=None if t else "the video did not play")
+    was = json.load(open(f"{STATE}/video.json"))["t"]
+    if not G.thyris_answers():
+        G.quit_app(person, "thyris")
+        out(ok=False, why="Thyris does not answer after the wake")
+    c = G.CDP(G.cdp_page(), timeout=10)
+    st = json.loads(js(c, "JSON.stringify({p: document.getElementById('v').paused, t: document.getElementById('v').currentTime})"))
+    js(c, "document.getElementById('v').play()")
+    time.sleep(2)
+    t2 = js(c, "document.getElementById('v').currentTime")
+    c.close()
+    G.quit_app(person, "thyris")
+    why = []
+    if not st["p"] or abs(st["t"] - was) > 0.5:
+        why.append(f"the paused video moved ({was:.1f} s before the sleep, {st['t']:.1f} s after, paused {st['p']})")
+    if not (t2 and t2 != st["t"]):
+        why.append("it did not play again")
+    out(ok=not why, why="; ".join(why) or None)
+
+
+STEPS = {"apps-install": step_apps_install, "apps-wait": step_apps_wait, "picker": step_picker, "pick-answer": pick_answer,
+         "serve": step_serve, "serve-forever": serve_forever,
+         "creator-record": step_creator_record, "creator-youtube": step_creator_youtube,
+         "creator-upload-start": step_creator_upload_start, "creator-upload-done": step_creator_upload_done,
+         "creator-download": step_creator_download, "creator-audio-place": step_creator_audio_place,
+         "creator-audio-playing": step_creator_audio_playing, "office-make": step_office_make,
+         "office-open": step_office_open, "office-saved": step_office_saved, "office-reopen": step_office_reopen,
+         "office-viewer": step_office_viewer, "office-call": step_office_call, "office-zoom": step_office_zoom,
+         "dev-open-folder": step_dev_open_folder, "dev-terminal": step_dev_terminal, "dev-theme": step_dev_theme,
+         "dev-ide": step_dev_ide, "gamer-steam": step_gamer_steam, "gamer-discord": step_gamer_discord,
+         "gamer-fullscreen": step_gamer_fullscreen, "everyday-notify": step_everyday_notify,
+         "everyday-screenshot": step_everyday_screenshot, "everyday-clipboard": step_everyday_clipboard,
+         "everyday-emoji": step_everyday_emoji, "everyday-video": step_everyday_video}

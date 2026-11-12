@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""tools/hardware-daily <version> [--only <id> ...]: Tacit Daily's part on a real computer (HARDWARE-DAILY.md), what the
+test VM cannot do: the battery, real sleep, Wi-Fi, the touchpad, the camera, the microphone, Bluetooth sound, a game's
+frame rate, and the steps that need an account. Copied to a laptop with <version> installed and run there by a tester,
+in a terminal on the desktop. Where a number can be read, it reads it; where only a person can tell, it asks, and
+writes down what they said, who they are and on what computer. It never marks a step passed by itself.
+
+Writes hardware-<version>.json here; put it in the packaging checkout's out/x86_64/, where tools/daily-bench's
+scorecard takes it in (tools/daily-bench <version> --report).
+"""
+import glob, json, math, os, re, struct, subprocess, sys, time
+
+ASK_ONLY = {
+    # the suites' ACCOUNT and HARDWARE steps (tools/daily-bench's SUITES), and what to do for each
+    "creator.stream": "Stream to YouTube from OBS with a stream key for 2 minutes. Does the stream play on YouTube, with sound?",
+    "creator.whatsapp": "In WhatsApp Business on the web (Thyris), have someone send you a voice note; find it in search by part "
+                        "of its name, and play it. Did it play?",
+    "creator.sheets-topup": "Edit an online spreadsheet (Google Sheets) and open the top-up website you use up to its payment page. Both work?",
+    "office.pinch": "In Thyris, pinch on the touchpad over a page. Does the page zoom, smoothly, and back?",
+    "office.mic-heard": "In a real call (Meet, Discord or WhatsApp), does the other side hear you clearly?",
+    "gamer.discord-share": "In a Discord call, share your screen. Does the other side see it, moving?",
+    "everyday.messaging": "Signed in to WhatsApp Web and Discord, with the window in the background: does a message's notification arrive?",
+}
+
+
+def ask(q):
+    """the tester's answer: passed, failed (with a note), or skipped"""
+    while True:
+        a = input(f"\n{q}\n  [y] yes  [n] no  [s] skip: ").strip().lower()
+        if a in ("y", "n", "s"):
+            break
+    if a == "s":
+        return None
+    note = input("  what you saw (Enter for none): ").strip()
+    return {"seen": "passed" if a == "y" else "failed", "note": note}
+
+
+def battery():
+    """(energy in Wh, percent, on mains) from the first battery"""
+    for d in sorted(glob.glob("/sys/class/power_supply/*")):
+        if open(f"{d}/type").read().strip() != "Battery" or (os.path.exists(f"{d}/scope") and open(f"{d}/scope").read().strip() == "Device"):
+            continue
+        r = lambda n: float(open(f"{d}/{n}").read()) if os.path.exists(f"{d}/{n}") else None
+        e = r("energy_now")
+        if e is None and r("charge_now") is not None and r("voltage_now"):
+            e = r("charge_now") * r("voltage_now") / 1e6
+        mains = any(open(f"{m}/online").read().strip() == "1" for m in glob.glob("/sys/class/power_supply/*")
+                    if os.path.exists(f"{m}/online") and open(f"{m}/type").read().strip() in ("Mains", "USB", "USB_C"))
+        return (e / 1e6 if e else None), r("capacity"), mains
+    return None, None, None
+
+
+def drain(minutes, what):
+    e0, p0, mains = battery()
+    if e0 is None:
+        print("  no battery here: skipped")
+        return None
+    if mains:
+        input("  unplug the charger, then press Enter")
+    print(f"  {what} for {minutes} minutes; the screen stays on, at the brightness you use ...")
+    t0 = time.time()
+    time.sleep(minutes * 60)
+    e1, p1, mains = battery()
+    hours = (time.time() - t0) / 3600
+    r = {"watts": round((e0 - e1) / hours, 2), "percent_per_hour": round((p0 - p1) / hours, 1), "minutes": minutes,
+         "charger": "plugged in on the way" if mains else "none"}
+    print(f"  {r['watts']} W, {r['percent_per_hour']} % an hour")
+    return r
+
+
+def record(seconds=3):
+    """the microphone's loudest sample over a few seconds (pw-record, the default source)"""
+    p = subprocess.run(["timeout", str(seconds), "pw-record", "--rate", "16000", "--channels", "1", "--format", "s16", "-"],
+                       capture_output=True)
+    raw = p.stdout
+    n = len(raw) // 2
+    return round(max((abs(v) for v in struct.unpack(f"<{n}h", raw[:n * 2])), default=0) / 32768, 3) if n else 0.0
+
+
+def tone(seconds=3):
+    """a 440 Hz tone to the default output (pw-play)"""
+    raw = b"".join(struct.pack("<h", int(9000 * math.sin(2 * math.pi * 440 * i / 16000))) for i in range(16000 * seconds))
+    subprocess.run(["pw-play", "--rate", "16000", "--channels", "1", "--format", "s16", "-"], input=raw)
+
+
+def wifi():
+    o = subprocess.run(["nmcli", "-t", "-f", "TYPE,STATE", "device"], capture_output=True, text=True).stdout
+    return any(line.startswith("wifi:connected") for line in o.splitlines())
+
+
+def mangohud(path):
+    """a MangoHud log's frame rate (median and 1 % low) and frame times (99th percentile)"""
+    rows = [line.split(",") for line in open(path).read().splitlines()]
+    head = next(i for i, r in enumerate(rows) if r and r[0].strip() == "fps")
+    fps = sorted(float(r[0]) for r in rows[head + 1:] if r and re.match(r"^[\d.]+$", r[0]))
+    ft = sorted(float(r[1]) for r in rows[head + 1:] if len(r) > 1 and re.match(r"^[\d.]+$", r[1]))
+    pick = lambda v, q: v[min(len(v) - 1, int(len(v) * q))] if v else None
+    return {"fps_median": pick(fps, 0.5), "fps_1pct_low": pick(fps, 0.01), "frametime_p99_ms": pick(ft, 0.99), "samples": len(fps)}
+
+
+def main():
+    a = sys.argv[1:]
+    if not a or a[0].startswith("-"):
+        sys.exit(__doc__)
+    version, only = a[0], set(a[a.index("--only") + 1:]) if "--only" in a else set()
+    want = lambda i: not only or i in only
+    on = open("/sys/class/dmi/id/product_name").read().strip() if os.path.exists("/sys/class/dmi/id/product_name") else "?"
+    by = input(f"Tacit Daily on a computer: {version}, on {on}.\nYour name (it goes in the record): ").strip() or "?"
+    rec_path = f"hardware-{version}.json"
+    rec = json.load(open(rec_path)) if os.path.exists(rec_path) else {"version": version, "numbers": {}, "steps": {}}
+    rec.update(by=by, on=on, date=time.strftime("%Y-%m-%d"))
+    tacit = subprocess.run(["pacman", "-Q", "tacit"], capture_output=True, text=True).stdout.split()
+    rec["tacit"] = tacit[1] if len(tacit) > 1 else "?"
+    save = lambda: json.dump(rec, open(rec_path, "w"), indent=1)
+    step = lambda key, r: (rec["steps"].__setitem__(key, dict(r, by=by, on=on)), save()) if r else None
+
+    if want("battery"):
+        print("\n== The battery, at rest: close every window but this terminal; leave the computer alone.")
+        rec["numbers"]["battery_idle"] = drain(30, "at rest")
+        print("\n== The battery, playing a video: play a 1080p video full screen in Thyris (YouTube), sound on.")
+        input("  start it, then press Enter")
+        rec["numbers"]["battery_video"] = drain(30, "a video playing")
+        save()
+    if want("sleep"):
+        print("\n== Real sleep: close the lid for 5 minutes, then open it and unlock.")
+        e0, p0, _ = battery()
+        w0 = wifi()
+        input("  close the lid now; after 5 minutes open it, unlock, and press Enter here")
+        e1, p1, _ = battery()
+        r = ask("After opening the lid: the lock screen came, the password unlocked it, the desktop answers?")
+        if r:
+            r["note"] = (r["note"] + "; " if r["note"] else "") + f"battery {p0} % to {p1} %"
+        step("daily.sleep", r)
+        if w0:
+            time.sleep(10)
+            step("everyday.wifi", {"seen": "passed" if wifi() else "failed",
+                                   "note": "connected again after the sleep" if wifi() else "not connected 10 s after the sleep"})
+    if want("wifi") and "everyday.wifi" not in rec["steps"]:
+        step("everyday.wifi", ask("Join a Wi-Fi network from the notch or Settings. Connected, and a page loads in Thyris?"))
+    if want("touchpad"):
+        step("daily.touchpad", ask("On the touchpad: two-finger scroll, a three-finger swipe up (the overview) and to the sides "
+                                   "(workspaces), tap to click. All as expected, none sending a window to a half?"))
+    if want("camera"):
+        p = subprocess.run(["ffmpeg", "-v", "error", "-f", "v4l2", "-i", "/dev/video0", "-frames:v", "1", "-f", "image2pipe",
+                            "-vcodec", "ppm", "-"], capture_output=True, timeout=30) if os.path.exists("/dev/video0") else None
+        got = bool(p and p.returncode == 0 and len(set(p.stdout[100::997])) > 8)
+        r = ask(f"The camera {'gave a picture' if got else 'gave no picture to ffmpeg'}. In a call in Thyris "
+                "(meet.jit.si, no account), does the other side see you?")
+        step("office.camera", r)
+    if want("microphone"):
+        input("\n== The microphone: press Enter, then speak for 3 seconds")
+        level = record()
+        rec["numbers"]["microphone_level"] = level
+        step("daily.microphone", {"seen": "passed" if level > 0.05 else "failed",
+                                  "note": f"loudest sample {level} while speaking"})
+    if want("bluetooth"):
+        input("\n== Bluetooth sound: pair headphones or a speaker from the notch or Settings, then press Enter")
+        sink = subprocess.run(["pactl", "get-default-sink"], capture_output=True, text=True).stdout.strip()
+        tone()
+        r = ask(f"The sound went to {sink or 'nothing'}. Did you hear a tone in the headphones or speaker?")
+        if r and not sink.startswith("bluez"):
+            r = {"seen": "failed", "note": f"the sound went to {sink}, not the Bluetooth device"}
+        step("everyday.bt-audio", r)
+        step("creator.bt-speaker", ask("Play a YouTube video in Thyris: is it heard over the Bluetooth device, in sync?"))
+    if want("proton"):
+        print("\n== A game: start a Proton game from Steam with MANGOHUD=1 MANGOHUD_CONFIG=output_folder=/tmp,log_duration=120,"
+              "autostart_log=10 %command% as its launch options; play 2 minutes.")
+        path = input("  the MangoHud log (a .csv in /tmp), or Enter to skip: ").strip()
+        if path:
+            rec["numbers"]["proton"] = mangohud(path)
+            print(f"  {rec['numbers']['proton']}")
+        step("gamer.proton", ask("Did the game start through Proton and play, full screen, and come back after Alt+Tab?"))
+    for key, q in ASK_ONLY.items():
+        if want(key):
+            step(key, ask(q))
+    save()
+    print(f"\nwritten: {rec_path}; copy it to the packaging checkout's out/x86_64/ and run tools/daily-bench {version} --report")
+
+
+if __name__ == "__main__":
+    main()

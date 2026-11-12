@@ -3,7 +3,8 @@
 # tools/release-check <version> --vm-passed "…"  records that the VM round for <version> passed, with what was checked
 # tools/release-check <version> --iso            after tools/iso: the install image holds <version>
 #
-# Each gate prints ok or FAIL, and the command fails if any did. It changes nothing but the VM record.
+# Each gate prints ok or FAIL, and the command fails if any did; tools/publish will not run until it passes. It changes
+# nothing but the VM record.
 set -u
 here=$(dirname "$(dirname "$(readlink -f "$0")")"); cd "$here"
 version=${1:-}; [ -n "$version" ] || { echo "usage: tools/release-check <version> [--vm-passed \"what was checked\"]" >&2; exit 2; }
@@ -127,6 +128,58 @@ echo "== the VM round"
 if [ ! -f "$record" ]; then bad "no VM round recorded for $version (tools/release-check $version --vm-passed \"…\")"
 elif [ "$(stat -c %Y "$record")" -lt "$newest" ]; then bad "the VM round for $version came before the newest package: test again"
 else ok "VM round: $(sed -n 2p "$record")"; fi
+
+# The VM round looks at the screen; tools/vm-smoke exercises what 1.2.14's round missed (Thyris played nothing, the
+# volume stopped at 99 on every updated computer) and records each check, pass or fail.
+echo "== the VM smoke (tools/vm-smoke)"
+smoke=$out/vm-smoke-$version
+if [ ! -f "$smoke" ]; then bad "no VM smoke for $version (tools/vm-smoke $version)"
+elif [ "$(sed -n 2p "$smoke" | cut -d, -f1)" != "tacit $version" ]; then bad "$smoke is for $(sed -n 2p "$smoke" | cut -d, -f1), not tacit $version"
+elif [ "$(stat -c %Y "$smoke")" -lt "$newest" ]; then bad "the VM smoke for $version came before the newest package: run it again"
+else
+	for c in update plugins volume-100 thyris-sound apps-qml shell-log; do
+		line=$(grep -E "^(pass|fail) $c:" "$smoke" | tail -1)
+		case "$line" in pass*) ok "$line" ;; fail*) bad "$line" ;; *) bad "the VM smoke has no $c check" ;; esac
+	done
+fi
+
+# A release note says what someone saw working on a running system (the owner, 2026-11-12: 1.2.14's notes claimed
+# three fixes nobody had seen work). Each note of this release names how in the release's "verified", by the note's
+# text: "vm: <check>", a check the VM smoke passed, "vm-hand: <what was seen in the VM, by whom>" (the owner,
+# 2026-11-12: a VM check by hand counts), or "hardware: <who saw it, on what>". The others are listed for the owner to
+# try, and stay out of the notes until someone has.
+echo "== the notes: each one seen working"
+python3 - "$version" "$smoke" <<'EOF' || failed=1
+import json, os, re, sys
+version, smoke = sys.argv[1:]
+r = json.load(open("tacit/notes.json"))["releases"][0]
+if r.get("version") != version:
+    sys.exit(0)     # said above
+passed = set()
+if os.path.exists(smoke):
+    passed = {m.group(1) for m in (re.match(r"pass (\S+):", line) for line in open(smoke)) if m}
+changes, verified = r.get("changes", []), r.get("verified", {})
+untried, bad = [], False
+for note in changes:
+    how = verified.get(note, "").strip()
+    vm = re.fullmatch(r"vm: (\S+)", how)
+    said = any(how.startswith(p) and how[len(p):].strip() for p in ("vm-hand:", "hardware:"))
+    if (vm and vm.group(1) in passed) or said:
+        print(f"  ok    {note[:60]}{'…' if len(note) > 60 else ''} ({how})")
+    else:
+        if vm:
+            print(f"  FAIL  {note[:60]}… says {how}, which the VM smoke did not pass")
+        untried.append(note)
+for note in verified:
+    if note not in changes:
+        print(f"  FAIL  \"verified\" names a note that is not among the changes: {note[:60]}…")
+        bad = True
+if untried:
+    print("  FAIL  needs a try on hardware; out of the notes until someone sees it work:")
+    for note in untried:
+        print(f"          - {note}")
+sys.exit(1 if untried or bad else 0)
+EOF
 
 echo
 [ "$failed" = 0 ] && echo "release-check: $version can be published" || echo "release-check: $version is not ready"

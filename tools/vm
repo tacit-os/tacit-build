@@ -8,18 +8,25 @@ Runs on the cloud machine (copied there as ~/tacit-vm/vm):
   vm shot <file.png>    the screen now
   vm click X Y          a left click at screen pixel X,Y (1920x1080); vm move X Y moves only; vm rclick X Y right
   vm drag X1 Y1 X2 Y2 [ms] [hold-ms]   a left-button drag, moved over ms, rested hold-ms before letting go
-  vm scroll X Y N       N mouse-wheel steps at X,Y (down; N < 0 up)
+  vm scroll [--ctrl] X Y N   N mouse-wheel steps at X,Y (down; N < 0 up); --ctrl with Ctrl held (a page's zoom)
   vm type <text>        the text as typed keys (a US keyboard's; --de German, --gb British);   vm key <name> [...]   keys at once (ret, tab, esc, ctrl, alt, ...)
   vm eject              eject the CD-ROM;          vm insert <iso>     replace the CD-ROM image
   vm reset              the power button held and pressed again
+  vm status             QEMU's run state: running, suspended (asleep), ...;   vm wake   wakes a computer that sleeps
   vm film <dir> <n> <s> n pictures, one every s seconds, into dir (a boot splash, a shutdown); stops early once the
                         computer is off
   vm stop               off, disk kept;           vm disk             boots the disk only (no ISO)
+  vm agent              whether the installed system's guest agent answers (qemu-guest-agent, installed once on the
+                        test image: sudo pacman -S qemu-guest-agent, then restart it)
+  vm run [--stdin FILE] [--timeout S] -- CMD [ARG ...]   CMD run as root in the installed system through the agent,
+                        its output printed and its exit code returned: commands without typing them
+The computer has a sound card whose sound goes nowhere (QEMU's "none" audio), so its PipeWire has a real output.
 """
-import json, os, socket, subprocess, sys, time
+import base64, json, os, random, socket, subprocess, sys, time
 
 HOME = os.path.expanduser("~/tacit-vm")
 QMP = f"{HOME}/qmp.sock"
+QGA = f"{HOME}/qga.sock"
 W, H = 1920, 1080
 
 
@@ -40,6 +47,56 @@ def qmp(cmd, args=None):
     return r["return"]
 
 
+class AgentGone(Exception):
+    pass
+
+
+def agent(cmd, args=None, timeout=10):
+    """One command to the guest agent (QEMU guest agent protocol), its answer. A guest-sync first, with a number of
+    its own, so an answer a dropped connection left on the line is not taken for this one."""
+    try:
+        s = socket.socket(socket.AF_UNIX)
+        s.settimeout(timeout)
+        s.connect(QGA)
+        f = s.makefile("rw")
+        sync = random.randint(1, 2**31)
+        f.write(json.dumps({"execute": "guest-sync", "arguments": {"id": sync}}) + "\n"); f.flush()
+        while True:
+            line = f.readline()
+            if not line:
+                raise OSError("it hung up")
+            if json.loads(line).get("return") == sync:
+                break
+        f.write(json.dumps(dict({"execute": cmd}, **({"arguments": args} if args else {}))) + "\n"); f.flush()
+        r = json.loads(f.readline() or "{}")
+        s.close()
+    except (OSError, ValueError) as e:
+        raise AgentGone(f"the guest agent does not answer ({e})")
+    if "error" in r:
+        raise AgentGone(f"guest agent {cmd}: {r['error']}")
+    if "return" not in r:
+        raise AgentGone(f"the guest agent hung up on {cmd}")
+    return r["return"]
+
+
+def run(argv, stdin=None, timeout=600):
+    """argv run as root in the installed system: (exit code, output, errors). 124 when it ran past timeout."""
+    a = {"path": argv[0], "arg": argv[1:], "capture-output": True}
+    if stdin is not None:
+        a["input-data"] = base64.b64encode(stdin).decode()
+    pid = agent("guest-exec", a)["pid"]
+    end = time.time() + timeout
+    while True:
+        st = agent("guest-exec-status", {"pid": pid})
+        if st.get("exited"):
+            break
+        if time.time() > end:
+            return 124, b"", f"{argv[0]}: still running after {timeout} s".encode()
+        time.sleep(0.2)
+    code = st["exitcode"] if "exitcode" in st else 128 + st.get("signal", 0)
+    return code, base64.b64decode(st.get("out-data", "")), base64.b64decode(st.get("err-data", ""))
+
+
 def boot(iso, transport="cdrom"):
     os.makedirs(HOME, exist_ok=True)
     kvm = os.path.exists("/dev/kvm")
@@ -58,6 +115,10 @@ def boot(iso, transport="cdrom"):
            "-display", "none",
            "-device", "qemu-xhci", "-device", "usb-tablet", "-device", "usb-kbd",
            "-netdev", "user,id=n0", "-device", "virtio-net-pci,netdev=n0",
+           # the guest agent's line (vm agent, vm run), and a sound card heard by no one
+           "-device", "virtio-serial-pci", "-chardev", f"socket,id=qga,path={QGA},server=on,wait=off",
+           "-device", "virtserialport,chardev=qga,name=org.qemu.guest_agent.0",
+           "-audiodev", "none,id=snd", "-device", "ich9-intel-hda", "-device", "hda-duplex,audiodev=snd",
            "-qmp", f"unix:{QMP},server,nowait", "-serial", f"file:{HOME}/serial.log", "-daemonize", "-pidfile", f"{HOME}/qemu.pid"]
     if iso:
         bootindex = 0 if stick_first else 1
@@ -138,14 +199,22 @@ def main():
             qmp("input-send-event", {"events": [{"type": "btn", "data": {"down": down, "button": "right"}}]})
             time.sleep(0.05)
     elif a[0] == "scroll":
-        # scroll X Y N: N mouse-wheel steps at X,Y, down (N < 0: up)
+        # scroll [--ctrl] X Y N: N mouse-wheel steps at X,Y, down (N < 0: up), with Ctrl held when asked
+        ctrl = a[1:2] == ["--ctrl"]
+        if ctrl:
+            a = a[1:]
         x, y, n = int(a[1]) * 32767 // (W - 1), int(a[2]) * 32767 // (H - 1), int(a[3])
         qmp("input-send-event", {"events": [{"type": "abs", "data": {"axis": "x", "value": x}},
                                             {"type": "abs", "data": {"axis": "y", "value": y}}]})
+        hold = lambda down: qmp("input-send-event", {"events": [{"type": "key", "data": {"down": down, "key": {"type": "qcode", "data": "ctrl"}}}]})
+        if ctrl:
+            hold(True); time.sleep(0.05)
         for _ in range(abs(n)):
             for down in (True, False):
                 qmp("input-send-event", {"events": [{"type": "btn", "data": {"down": down, "button": "wheel-down" if n > 0 else "wheel-up"}}]})
             time.sleep(0.04)
+        if ctrl:
+            time.sleep(0.05); hold(False)
     elif a[0] == "drag":
         # drag X1 Y1 X2 Y2 [ms] [hold-ms]: press at the first point, move to the second over ms (60 steps a second),
         # rest there hold-ms, let go: a hand's drag, for gestures
@@ -194,8 +263,37 @@ def main():
         qmp("blockdev-change-medium", {"id": "stickdev", "filename": os.path.abspath(a[1]), "format": "raw"})
     elif a[0] == "reset":
         qmp("system_reset")
+    elif a[0] == "status":
+        print(qmp("query-status")["status"])
+    elif a[0] == "wake":
+        qmp("system_wakeup")
     elif a[0] == "stop":
         qmp("quit")
+    elif a[0] == "agent":
+        try:
+            agent("guest-ping", timeout=5)
+        except AgentGone as e:
+            sys.exit(f"vm: {e}")
+        print("the guest agent answers")
+    elif a[0] == "run":
+        stdin, timeout, rest = None, 600, a[1:]
+        while rest and rest[0] != "--":
+            if rest[0] == "--stdin":
+                stdin = open(rest[1], "rb").read()
+            elif rest[0] == "--timeout":
+                timeout = float(rest[1])
+            else:
+                sys.exit(__doc__)
+            rest = rest[2:]
+        if len(rest) < 2:
+            sys.exit(__doc__)
+        try:
+            code, out, err = run(rest[1:], stdin, timeout)
+        except AgentGone as e:
+            sys.exit(f"vm: {e}")
+        sys.stdout.buffer.write(out); sys.stdout.flush()
+        sys.stderr.buffer.write(err)
+        sys.exit(code)
     else:
         sys.exit(__doc__)
 
