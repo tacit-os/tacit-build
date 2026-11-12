@@ -53,6 +53,10 @@ sed -i -E 's/^(set )?timeout=.*/timeout=0/; s/^(set )?timeout_style=.*/timeout_s
 # and starts quietly: no kernel or systemd lines scrolling past before Setup (people never see logs; the 1.2.7 stick
 # showed a full screen of them, ending in "A start job is running ... (no limit)")
 QUIET="quiet loglevel=3 rd.udev.log_level=3 systemd.show_status=false vt.global_cursor_default=0"
+# and starts at once: archiso's copytoram=auto copied the whole 3 GB image into memory first on any computer with
+# 5 GB free, a minute or more of black screen with one progress line before Try Tacit (Discord, 2026-11-12). Run from
+# the stick, its boot files stay mounted, so Setup and tacit-install know which disk is the stick again.
+QUIET="$QUIET copytoram=n"
 sed -i -E "s|^(\s*linux\s+.*vmlinuz-linux.*)$|\1 $QUIET|" $p/grub/*.cfg 2>/dev/null || true
 sed -i -E "s|^(\s*APPEND\s+.*archisobasedir.*)$|\1 $QUIET|" $p/syslinux/*.cfg 2>/dev/null || true
 sed -i -E "s|^(options\s+.*archisobasedir.*)$|\1 $QUIET|" $p/efiboot/loader/entries/*.conf 2>/dev/null || true
