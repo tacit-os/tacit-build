@@ -2,7 +2,7 @@
 # tools/iso: Tacit's x86_64 ISO, made on the cloud machine (cef-build-x64, which must be running; it is left as found)
 # with archiso in a privileged Arch container: archiso's baseline profile, iso/ laid over it, the packages from [tacit]
 # as published (~/.cache/tacit-repo/x86_64, tools/publish), checked against Tacit's key. The ISO stays on the machine
-# (~/tacit-iso/out) for the VM test; its name is printed.
+# (~/tacit-iso/work/out) for the VM test; its name is printed.
 # The installer (tacit-install) removes the live system's own files from what it copies: every file archiso's profile
 # and iso/ put in the image, less the ones the installed system keeps (KEEP), listed in /usr/share/tacit/live-files.
 set -eu
@@ -108,8 +108,8 @@ if [ "$status" != 0 ]; then
     exit 1
 fi
 # what the release notes page needs (RELEASE.md, step 8), and what tools/release-check <version> --iso reads
-name=$(on "ls ~/tacit-iso/out/*.iso" | tail -1)
-[ -n "$name" ] || { echo "tools/iso: no ISO in ~/tacit-iso/out on $vm" >&2; exit 1; }
+name=$(on "ls ~/tacit-iso/work/out/*.iso" | tail -1)
+[ -n "$name" ] || { echo "tools/iso: no ISO in ~/tacit-iso/work/out on $vm" >&2; exit 1; }
 size=$(on "stat -c %s $name")
 sha=$(on "sha256sum $name" | cut -d' ' -f1)
 mkdir -p out/x86_64
