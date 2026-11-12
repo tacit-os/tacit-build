@@ -110,6 +110,19 @@ for f in */PKGBUILD; do
 	else note "$d $v: built against $against, Tacit ships $day (a candidate day: move it with tools/arch-day after the VM)"; fi
 done
 
+# a pin nothing meets fails every computer's update: each part tacit needs at a version is met by its recipe here, which
+# the gate above has seen built or live
+echo "== tacit's pins: each one met by its part's recipe"
+for dep in $(cd tacit && bash -c 'source PKGBUILD; printf "%s\n" "${depends[@]}"'); do
+	n=${dep%%[<>=]*}; [ "$n" != "$dep" ] || continue        # no version asked
+	rest=${dep#"$n"}; pin=${rest##*[<>=]}; op=${rest%"$pin"}
+	v=$(cd "$n" 2>/dev/null && bash -c 'source PKGBUILD; echo "${epoch:+$epoch:}$pkgver-$pkgrel"' 2>/dev/null) || { bad "tacit needs $dep: there is no $n recipe here"; continue; }
+	r=$(vercmp "$v" "$pin")
+	case "$op" in
+		'>=') [ "$r" -ge 0 ] ;; '>') [ "$r" -gt 0 ] ;; '=') [ "$r" = 0 ] ;; '<=') [ "$r" -le 0 ] ;; '<') [ "$r" -lt 0 ] ;; *) false ;;
+	esac && ok "tacit needs $dep: $n $v" || bad "tacit needs $dep, and the $n recipe is $v"
+done
+
 echo "== the VM round"
 if [ ! -f "$record" ]; then bad "no VM round recorded for $version (tools/release-check $version --vm-passed \"…\")"
 elif [ "$(stat -c %Y "$record")" -lt "$newest" ]; then bad "the VM round for $version came before the newest package: test again"

@@ -3,7 +3,7 @@
 pkgname=tacit-foot
 _footver=1.28.0
 pkgver=1.28.0.1
-pkgrel=3
+pkgrel=4
 pkgdesc="Tacit: the foot terminal with Tacit's text"
 arch=('aarch64' 'x86_64')
 url="https://github.com/ciscobugger/tacit-foot"
@@ -12,6 +12,9 @@ depends=('fcft' 'fontconfig' 'libxkbcommon' 'pixman' 'libutf8proc' 'wayland' 'fo
 makedepends=('git' 'meson' 'ninja' 'scdoc' 'tllist' 'wayland-protocols')
 provides=("foot=$_footver")
 conflicts=('foot')
+# a computer set up before 1.2 has Arch's foot: pacman -Su swaps it only for a package that replaces it, and the updater's
+# --noconfirm answers no to removing a conflicting one, which failed the whole update
+replaces=('foot')
 source=("foot::git+https://codeberg.org/dnkl/foot.git#tag=$_footver"
         "tacit-foot::git+https://github.com/ciscobugger/tacit-foot.git#tag=v$_footver-1"
         "tllist::git+https://codeberg.org/dnkl/tllist.git#tag=1.1.0"

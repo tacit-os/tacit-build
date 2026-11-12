@@ -4,7 +4,7 @@
 # matters (the charger runs only on this model).
 pkgname=tacit-device-book4-edge
 pkgver=0.1.0
-pkgrel=2
+pkgrel=3
 pkgdesc="Tacit: Samsung Galaxy Book4 Edge support"
 arch=('aarch64')
 url="https://github.com/ciscobugger/book4-edge-linux"
@@ -43,10 +43,10 @@ package() {
 	install -Dm644 -t "$lib/udev/rules.d" "$u/udev/90-book4-gpu-floor.rules" "$u/udev/61-book4-keyboard-not-a-tablet.rules"
 	install -Dm644 -t "$lib/modules-load.d" "$u/modules-load/book4-input.conf" "$u/modules-load/i2c-dev.conf"
 
-	# memory: zram swap, its sysctl, MGLRU, transparent huge pages on request, earlyoom's thresholds and its lists
+	# memory: zram swap, MGLRU, transparent huge pages on request, earlyoom's thresholds and its lists. zram's sysctl is
+	# tacit-session's 99-tacit-zram.conf, the same values: two packages cannot own one file, and the second refused to install
 	install -Dm755 "$u/memory/zram-swap" "$lib/tacit/zram-swap"
 	sed 's|/usr/local/bin/zram-swap|/usr/lib/tacit/zram-swap|g' "$u/memory/zram-swap.service" | install -Dm644 /dev/stdin "$sys/zram-swap.service"
-	install -Dm644 "$u/memory/99-zram.conf" "$lib/sysctl.d/99-tacit-zram.conf"
 	install -Dm644 "$u/memory/mglru.conf" "$lib/tmpfiles.d/tacit-mglru.conf"
 	install -Dm644 "$u/memory/thp-madvise.conf" "$lib/tmpfiles.d/tacit-thp-madvise.conf"
 	# earlyoom reads /etc/default/earlyoom (its own package's file) after any Environment=: replace the command instead

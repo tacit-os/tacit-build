@@ -7,6 +7,7 @@ post_install() {
 	_network
 	_zsh
 	_memory
+	_keyring
 }
 post_upgrade() {
 	post_install
@@ -86,4 +87,24 @@ _memory() {
 	systemctl daemon-reload >/dev/null 2>&1 || true
 	systemctl enable --now earlyoom.service >/dev/null 2>&1 || true
 	mkdir -p /var/lib/tacit && touch "$done"
+}
+
+# The lock's password opens the login keyring (computers installed before Setup did this, 2026-10-16, have neither line):
+# PAM's login service, the one the lock checks the password with, hands it to gnome-keyring, and a password changed in
+# Settings (passwd) changes the keyring's too. The keyring's socket is turned on where the login line was missing, as
+# Setup's presets do. The lines are Setup's; written once, the person's own choice since then stands
+_keyring() {
+	local done=/var/lib/tacit/keyring-pam
+	[ -e "$done" ] && return 0
+	if _pam_line /etc/pam.d/login '-auth      optional     pam_gnome_keyring.so'; then
+		systemctl --global preset gnome-keyring-daemon.socket >/dev/null 2>&1 || true
+	fi
+	_pam_line /etc/pam.d/passwd '-password  optional     pam_gnome_keyring.so use_authtok'
+	mkdir -p /var/lib/tacit && touch "$done"
+}
+# the line at the end of the PAM file, on a line of its own, when the file is there and names no pam_gnome_keyring
+_pam_line() {
+	[ -f "$1" ] && ! grep -q pam_gnome_keyring "$1" || return 1
+	[ -z "$(tail -c1 "$1")" ] || echo >> "$1"
+	printf '%s\n' "$2" >> "$1"
 }

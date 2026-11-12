@@ -43,6 +43,10 @@ package() {
 	chmod 644 "$pkgdir"/usr/share/sddm/themes/tacit/*.qml "$pkgdir"/usr/share/sddm/themes/tacit/*.desktop "$pkgdir"/usr/share/sddm/themes/tacit/theme.conf
 	install -Dm755 sddm/tacit-login-ground "$pkgdir/usr/lib/tacit/tacit-login-ground"
 	install -Dm644 sddm/sddm.service.d/tacit-login.conf -t "$pkgdir/usr/lib/systemd/system/sddm.service.d/"
+	# the same copy as the person logs out (SDDM brings the greeter back without restarting its service), and the rule
+	# that lets the shell start it without a password
+	install -Dm644 sddm/tacit-login-ground.service -t "$pkgdir/usr/lib/systemd/system/"
+	install -Dm644 sddm/50-tacit-login-ground.rules -t "$pkgdir/usr/share/polkit-1/rules.d/"
 	install -Dm644 sddm/tacit.conf "$pkgdir/usr/lib/sddm/sddm.conf.d/tacit.conf"
 	# Tacit's look for everyone (GTK and Qt read xdg/ above; GSettings, fontconfig here); a person's own settings win
 	install -Dm644 glib/90-tacit.gschema.override -t "$pkgdir/usr/share/glib-2.0/schemas/"

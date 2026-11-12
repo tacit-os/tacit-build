@@ -20,11 +20,16 @@ for f in "$@"; do
 		*) echo "publish: $f is for $a" >&2; exit 1 ;;
 	esac
 done
+# the arches the bucket has a repo for; offline or signed out, nothing is published
+held=$(gcloud storage ls "$bucket/") || { echo "publish: $bucket could not be read; nothing was published" >&2; exit 1; }
 for a in "${!by_arch[@]}"; do
 	dir=$mirror/$a
 	mkdir -p "$dir"
-	# the repo as the bucket has it (a first publish starts it)
-	gcloud storage rsync -q "$bucket/$a" "$dir" 2>/dev/null || true
+	# the repo as the bucket has it (a first publish starts it). A copy that failed or stopped part way is the end: the
+	# database made from it would name only these packages, and its upload would drop every other one from [tacit]
+	if grep -qx "$bucket/$a/" <<<"$held"; then
+		gcloud storage rsync -q "$bucket/$a" "$dir" || { echo "publish: $bucket/$a could not be copied; nothing was published for $a" >&2; exit 1; }
+	fi
 	new=()
 	for f in ${by_arch[$a]}; do
 		cp -f "$f" "$dir/"

@@ -100,7 +100,9 @@ publish() {
             grep -rlI --exclude-dir=.git -e "$owner_mail" -e "$project" "$w" >&2 || true
             exit 1
         fi
-        if git -C "$src" show --format= "$c" | grep '^+' | grep -qE "$keys"; then
+        # what goes public since the last commit: for a merge that is its whole branch, which git show's combined diff
+        # leaves out wherever the merge took one side's file as it was
+        if git -C "$src" diff "$last" "$c" | grep '^+' | grep -qE "$keys"; then
             echo "publish-source: $name at ${c:0:7} adds what looks like a key; nothing pushed" >&2
             exit 1
         fi

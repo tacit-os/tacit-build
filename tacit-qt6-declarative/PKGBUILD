@@ -4,7 +4,7 @@
 pkgname=tacit-qt6-declarative
 _pkgver=6.12.0
 pkgver=6.12.0
-pkgrel=1
+pkgrel=2
 arch=('aarch64' 'x86_64')
 url='https://github.com/ciscobugger/tacit-build'
 license=('GPL-3.0-only' 'LGPL-3.0-only' 'LicenseRef-Qt-Commercial' 'Qt-GPL-exception-1.0')
@@ -14,6 +14,8 @@ makedepends=('cmake' 'git' 'ninja' 'python' 'qt6-languageserver' 'qt6-shadertool
 optdepends=('qt6-svg: for QtQuickVectorImage and svgtoqml')
 provides=("qt6-declarative=$_pkgver")
 conflicts=('qt6-declarative')
+# swapped for Arch's on update, as tacit-foot is for foot: a conflict alone failed the update (--noconfirm answers no)
+replaces=('qt6-declarative')
 _pkgfn=qtdeclarative
 source=("git+https://code.qt.io/qt/$_pkgfn#tag=v$_pkgver"
         # the patch beside this recipe, so the changed Qt's source is public as its licence asks (it was in a private repo)
