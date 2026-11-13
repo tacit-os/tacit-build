@@ -2,11 +2,11 @@
 post_install() {
 	systemctl --global preset focus-priority.service quiet-btagent.service quiet-filemanager1.service >/dev/null 2>&1 || true
 }
-# Once more at an update from before 1.0.2 (0.2.1-31), the first package with this step: a computer set up before it may
-# never have had them on. Not on every update: the preset would turn a service back on for everyone after an
-# administrator turned it off.
+# Once more at the update to 0.2.1-78 (1.2.15), the first package with this step: a computer set up before 1.0.2 never
+# had them on, and every later update ran no step. Not on every update: the preset would turn a service back on for
+# everyone after an administrator turned it off. (A gate at 0.2.1-31 reached no one: those computers were past it.)
 post_upgrade() {
-	if (( $(vercmp "$2" 0.2.1-31) < 0 )); then
+	if (( $(vercmp "$2" 0.2.1-78) < 0 )); then
 		post_install
 	fi
 }
