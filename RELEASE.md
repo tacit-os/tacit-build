@@ -69,7 +69,14 @@ Owner, 2026-10-25: the numbers follow how a release reaches people, not how many
    Then, on the VM now on this release, Tacit Daily: `tools/daily-bench <version> --suite all` (the daily tasks, the
    speed and lightness numbers and the five workflow suites, against the release before), and before a weekly release
    `tools/daily-bench <version> --soak 8h` as well; `tools/hardware-daily` on a laptop for what the VM cannot do
-   (HARDWARE-DAILY.md). Owner, 2026-11-12: it only reports for now; read `out/x86_64/daily-<version>.md` and write
+   (HARDWARE-DAILY.md). On a VM with the release before installed (as for `tools/vm-smoke`),
+   `tools/daily-bench <version> --lived-in --lang de` updates a home lived in since earlier releases and judges it
+   (every 1.2.14 miss was of that kind); `--lang ru` runs it in a language whose letters are not Latin.
+   Each part starts from the same saved state of the computer, and a check that could not be measured (the VM, a mirror,
+   a site) is neither a pass nor a failure. On a new VM, and after a change to the bench, run it with `--repeat 3 --record
+   tools/daily-bench-fixtures/<name>` first: a check that is not the same every time is unstable and is fixed before it
+   counts, and the recording becomes tools/daily-bench-test's answers (commit it).
+   Owner, 2026-11-12: it only reports for now; read `out/x86_64/daily-<version>.md` and write
    down what it flags. After 2-3 releases have set the normal spread (run the first one twice), it joins the gate in
    step 6: a daily task that fails, or a clear slowdown or memory growth past the margin, holds the release back.
 6. **Gate.** `tools/release-check <version>` passes: a VM smoke of this version newer than its packages, every check

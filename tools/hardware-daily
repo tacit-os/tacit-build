@@ -20,6 +20,8 @@ ASK_ONLY = {
     "office.mic-heard": "In a real call (Meet, Discord or WhatsApp), does the other side hear you clearly?",
     "gamer.discord-share": "In a Discord call, share your screen. Does the other side see it, moving?",
     "everyday.messaging": "Signed in to WhatsApp Web and Discord, with the window in the background: does a message's notification arrive?",
+    "everyday.vpn-provider": "Bring up your own VPN (a provider's OpenVPN or WireGuard file, dropped on the VPN section): does it "
+                             "connect, and do the notch and Settings show it connected, in your language?",
 }
 
 

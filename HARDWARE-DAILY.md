@@ -32,6 +32,11 @@ installed. None of these is ever marked passed by the benchmark; only what a tes
 | office.pinch, office.mic-heard | a pinch zoom in Thyris; a real call where the other side hears you | your answers |
 | gamer.discord-share | a Discord call with a screen share | your answer |
 | everyday.messaging | WhatsApp Web and Discord in the background: a message's notification arrives | your answer |
+| everyday.vpn-provider | your own VPN from a provider (OpenVPN or WireGuard with a server) connects and shows connected | your answer |
+
+In the VM, `--lang de|ru` runs Tacit in German or Russian (a VPN there is a WireGuard stand-in with no server, which
+shows the state the shell reads but not a provider's), and `--lived-in` updates a home lived in since earlier releases.
+Run the protocol in the laptop's own language; say which in the note when it is not English.
 
 The suites' VM steps (OBS, LibreOffice, VS Code, Zed, Steam and Discord got from Apps, the recording of a window not in
 use, a call's microphone and screen share, and the rest) run in the VM with `tools/daily-bench <version> --suite all`.

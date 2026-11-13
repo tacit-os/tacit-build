@@ -118,6 +118,11 @@ done
 [ ${#pkgs[@]} -gt 0 ] || { echo "vm-smoke: no package of $version is new to [tacit]" >&2; exit 1; }
 cp "${pkgs[@]}" "$tmp/smoke/repo/"
 (cd "$tmp/smoke/repo" && repo-add -q tacit.db.tar.zst "${pkgs[@]##*/}")
+# REPO_ONLY=<dir>: only the test repo, into <dir>; tools/daily-bench --lived-in updates its home through the same one
+if [ -n "${REPO_ONLY:-}" ]; then
+	mkdir -p "$REPO_ONLY" && cp -a "$tmp/smoke/repo/." "$REPO_ONLY/" && echo "test repo: $REPO_ONLY"
+	exit
+fi
 cp tools/vm tools/vm-smoke tools/vm-smoke-guest "$tmp/smoke/"
 tar -C "$tmp" -cf "$tmp/smoke.tar" smoke
 

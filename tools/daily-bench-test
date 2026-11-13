@@ -5,7 +5,7 @@ computer would (as a good release, or as a release with the faults 1.2.14 had an
 and a stand-in gcloud that runs the cloud machine's half here. Then the parts that can run for real on this computer:
 the page-load method on a headless Chromium (Thyris's engine), the pictures, the PDFs and the screen arithmetic.
 Exits non-zero on any failure."""
-import importlib.machinery, json, os, shutil, subprocess, sys, tempfile, time
+import glob, importlib.machinery, json, os, re, shutil, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FAILED = []
@@ -18,14 +18,56 @@ def check(what, cond, detail=""):
 
 
 FAKE_VM = r'''#!/usr/bin/env python3
-# a stand-in tools/vm: the test computer as FAKE_SCENARIO says (good, bad), its state in ~/tacit-vm/fake.json
-import json, os, random, sys
+# a stand-in tools/vm. With FAKE_REPLAY=<exchanges.jsonl> it answers what a run recorded (tools/daily-bench --record):
+# real answers, once a real VM run has been recorded. Without, it answers from the model below, which is ASSUMED: written
+# by hand as the author expects a test computer to answer, not yet checked against one. Each answer's source is counted
+# in ~/tacit-vm/fake.json ("sources").
+import json, os, random, re, sys
 S = os.path.expanduser("~/tacit-vm/fake.json")
 st = json.load(open(S)) if os.path.exists(S) else {"power": "on", "calls": 0, "armed": {}, "keys": [], "boots": 0,
-                                                   "locked": False, "rebooting": 0, "log": []}
+                                                   "locked": False, "rebooting": 0, "log": [],
+                                                   "lang": {"lang": "en_GB.UTF-8", "layout": "gb"}, "group": 0,
+                                                   "tacit": os.environ.get("FAKE_TACIT", "1.2.15")}
 bad = os.environ.get("FAKE_SCENARIO") == "bad"
+outside = os.environ.get("FAKE_OUTSIDE") == "1"
 a = sys.argv[1:]
 st["calls"] += 1
+st.setdefault("sources", {"assumed": 0, "recorded": 0, "missing": 0})
+
+
+def norm(argv):
+    """an exchange's key: the command without its timeouts, numbers as N (idents, ports, counts differ from run to run)"""
+    argv = list(argv)
+    if argv and argv[0] == "run":
+        rest = argv[1:]
+        while rest and rest[0] != "--":
+            rest = rest[2:]
+        argv = ["run", *rest[1:]]
+        if argv[1:2] == ["/usr/bin/python3"]:
+            argv = ["guest", *argv[4:]]
+    return " ".join(re.sub(r"\d+", "N", x) for x in argv)
+
+
+if os.environ.get("FAKE_REPLAY"):
+    recorded = [json.loads(line) for line in open(os.environ["FAKE_REPLAY"])]
+    key = norm(a)
+    same = [r for r in recorded if norm(r["argv"]) == key]
+    pos = st.setdefault("replay_pos", {}).get(key, 0)
+    st["replay_pos"][key] = pos + 1
+    st["log"].append(" ".join(a[a.index("--") + 1:][3:6] if a[0] == "run" and "/usr/bin/python3" in a else a[:3]))
+    if not same:
+        st["sources"]["missing"] += 1
+        st.setdefault("missing", []).append(key)
+        json.dump(st, open(S, "w"))
+        sys.stderr.write(f"stand-in: the recording has no answer for {key}\n")
+        sys.exit(3)
+    r = same[min(pos, len(same) - 1)]          # past the recorded ones, the last again
+    st["sources"]["recorded"] += 1
+    json.dump(st, open(S, "w"))
+    sys.stdout.write(r["out"])
+    sys.stderr.write(r["err"])
+    sys.exit(r["code"])
+st["sources"]["assumed"] += 1
 rnd = random.Random(st["calls"])
 j = lambda base, spread=0.05: round(base * (1 + rnd.uniform(-spread, spread)), 1)
 cmd_ = a[a.index("--") + 1:] if a[0] == "run" else []
@@ -55,8 +97,36 @@ if a[0] == "disk":
 if a[0] == "stop":
     st["power"] = "off"
     done(0)
+GUEST = ("lang", "group", "locked", "tacit", "dialog", "lived_home", "update_armed")
+if a[0] == "snapshot":
+    snaps = st.setdefault("snapshots", {})
+    if a[1] == "prepare":
+        st["prepared"] = True
+        done(0, "the UEFI variables are qcow2")
+    if a[1] == "save":
+        if os.environ.get("FAKE_NO_SNAPSHOT"):
+            done(1, "vm: savevm: Error: No space left on device")
+        if os.environ.get("FAKE_PFLASH_RAW") and not st.get("prepared"):
+            done(1, "vm: savevm: Error: Device 'pflash1' is writable but does not support snapshots")
+        snaps[a[2]] = {k: st.get(k) for k in GUEST}
+        done(0)
+    if a[1] == "load":
+        if a[2] not in snaps:
+            done(1, f"vm: loadvm: Error: Snapshot '{a[2]}' does not exist")
+        for k, v in snaps[a[2]].items():
+            st[k] = v
+        st["power"] = "on"
+        done(0)
+    if a[1] == "delete":
+        snaps.pop(a[2], None)
+        done(0)
+    done(0, " ".join(snaps))
+if a[0] == "key" and os.environ.get("FAKE_KEY_FAIL") and os.environ["FAKE_KEY_FAIL"] in " ".join(a[1:]):
+    done(1, "vm: qmp send-key: {'class': 'GenericError', 'desc': 'stand-in: the keyboard is gone'}")
 if a[0] in ("key", "type", "click", "scroll"):
     st["keys"].append([a[0]] + a[1:])
+    if a[1:] == ["alt", "shift"] and "," in st["lang"]["layout"]:
+        st["group"] = 1 - st["group"]
     if a[0] == "type" and os.environ.get("TACIT_VM_PASSWORD", "pw-4711") in " ".join(a[1:]):
         st["typed_password"] = True
     done(0)
@@ -70,18 +140,71 @@ if cmd[0] == "systemctl":
     if cmd[1] == "poweroff":
         st["power"] = "off"
     if cmd[1] == "reboot":
-        st["disk_at"], st["boots"] = time.time(), st["boots"] + 1
+        st["disk_at"], st["boots"], st["group"] = time.time(), st["boots"] + 1, 0
+        if st.get("lang_pending"):
+            st["lang"] = st.pop("lang_pending")
+        if st.pop("update_armed", False):
+            st["tacit"] = os.environ.get("FAKE_TACIT_AFTER", st["tacit"])
+    done(0)
+if cmd[0] == "/bin/bash":       # tools/vm-smoke-guest's own steps
+    st["log"][-1] = "vm-smoke-guest " + " ".join(cmd[2:3])
+    if cmd[2] == "update":
+        st["update_armed"] = True
+        done(0, "armed")
     done(0)
 step, args = cmd[3], cmd[4:]
+dead = os.environ.get("FAKE_DEAD", "")          # a step the agent never answers (QEMU's agent hanging up)
+flaky = os.environ.get("FAKE_FLAKY_AGENT", "")  # a step the agent fails to answer once
+if dead and step == dead:
+    done(1, "vm: the guest agent does not answer (it hung up)")
+if flaky and step == flaky and not st.get("flaked"):
+    st["flaked"] = True
+    done(1, "vm: the guest agent does not answer (timed out)")
 n = st["calls"]
 version = os.environ.get("FAKE_TACIT", "1.2.15")
 def pss(base):
     grow = st.get("mem_calls", 0) * (25 if bad else 0.3)
     return {"mb": round(base + grow, 1), "pid": 100}
 out = {"ok": True}
+version = st["tacit"]
+layout = st["lang"]["layout"]
+active = "Russian" if st["group"] == 1 else {"de": "German", "gb": "English (UK)"}.get(layout.split(",")[0], "English (US)")
 if step == "preflight":
     out = {"ok": args[0] == version, "tacit": version + "-1", "hyprland": "v0.57.0",
+           "language": dict(st["lang"], active=active),
            "why": None if args[0] == version else f"the test computer has tacit {version}-1, not {args[0]}"}
+elif step == "lang-set":
+    st["own_lang"] = st.get("own_lang") or st["lang"]
+    st["lang_pending"] = {"lang": args[0], "layout": args[1]}
+    out = {"ok": True, "locale": args[0], "layout": args[1]}
+elif step == "lang-restore":
+    st["lang_pending"] = st.get("own_lang") or st["lang"]
+elif step == "lang-state":
+    out = dict(st["lang"], ok=True, active=active)
+elif step == "lang-network":
+    out = {"ok": not bad, "ip": "" if bad else "10.0.2.15", "lang": st["lang"]["lang"],
+           "why": f"the Network page shows no IP in {st['lang']['lang']}" if bad else None}
+elif step == "lang-vpn":
+    out = {"ok": not bad, "why": f"the shell does not show the VPN as connected in {st['lang']['lang']}" if bad else None}
+elif step == "lock-now":
+    st["locked"] = True
+elif step == "lived-in-home":
+    st["lived_home"] = json.load(open(args[0].replace("/var/tmp/daily", os.path.expanduser("~/tacit-vm/daily"))))
+    st["seen_home"] = st["lived_home"]          # for the test: the guest's own copy goes when daily-start is loaded
+    out = {"ok": True, "settings": "lived.json", "maxAllowed": 99, "kbLayout": "us"}
+elif step == "lived-in-check":
+    good_ = not bad
+    out = {"ok": good_, "checks": {"updated": [version == args[0], f"tacit {version} installed at the restart"],
+                                   "old volume default": [True, "Loudest allowed is 100"],
+                                   "old keyboard default": [True, "the saved keyboard is ''"],
+                                   "pins kept": [True, "every pin kept"], "wallpaper kept": [True, "the wallpaper kept"],
+                                   "choices kept": [True, "the person's own settings kept"],
+                                   "idle time kept": [True, "the lock comes after 600 s (the person chose 600)"],
+                                   "idle fixes reach": [good_, "hypridle reads this release's file" if good_ else
+                                                        "hypridle still reads the old copy in the home: this release's changes to it never reach this computer"],
+                                   "keyboard as installed": [good_, "the keyboard is 'de'" if good_ else
+                                                             "the keyboard is 'us', not 'de' as installed (the old Settings' kb_layout line still wins)"],
+                                   "mirror list": [None, "tacit-session did not change in this release: its upgrade step did not run"]}}
 elif step == "memory":
     st["mem_calls"] = st.get("mem_calls", 0) + 1
     out = {"ok": True, "pss": {"shell": pss(310), "hyprland": pss(120), "agent-host": pss(40)}}
@@ -103,10 +226,16 @@ elif step == "result":
     spec = arm["spec"] if arm else "?"
     if not pressed:
         out = {"ok": False, "spec": spec, "why": "the key never came"}
+    elif spec == "enter-unlocked" and st["group"] == 1 and bad:     # a Latin password typed with Russian active
+        out = {"ok": False, "spec": spec, "why": "not unlocked within 30 s of the press"}
+    elif spec == "enter-unlocked" and os.environ.get("FAKE_UNLOCK_FIRST_FAILS") and not st.get("unlock_failed_once"):
+        st["unlock_failed_once"] = True     # a key dropped while typing, once
+        out = {"ok": False, "spec": spec, "why": "not unlocked within 40 s of the press"}
     else:
         out = {"ok": True, "spec": spec, "ms": j({"search": 140, "notch-open": 90, "enter-usable": 6200}.get(spec, 300))}
         if spec in ("enter-unlocked", "enter-usable"):
             st["locked"] = False
+            st["group"] = 0 if not bad else st["group"]
             out["ok"] = st.get("typed_password", False)
             if not out["ok"]: out["why"] = "not unlocked within 30 s of the press"
         if spec == "notch-click" and bad:
@@ -115,13 +244,24 @@ elif step == "sound":
     out = {"ok": not bad, "why": "no playing stream from Thyris; the streams: " if bad else None,
            "detail": "a playback stream from Thyris, Thyris (812), and the speaker's loudest sample 0.48"}
 elif step == "wallpaper":
-    out = {"ok": True, "shown_ms": j(650), "before": 0.0, "after": 0.93}
+    st["wallpapers"] = st.get("wallpapers", 0) + 1
+    flip = os.environ.get("FAKE_FLAKY") == "wallpaper" and st["wallpapers"] % 2 == 0
+    out = ({"ok": False, "before": 0.0, "after": 0.31, "why": "the settled screen shows the new wallpaper on 31% of it, not at least 80% (before: 0%)"}
+           if flip else {"ok": True, "shown_ms": j(650), "before": 0.0, "after": 0.93})
+elif step == "before-snapshot":
+    out = {"ok": True, "used_mb": 100}
+elif step == "creator-download" and os.environ.get("FAKE_SPILL"):
+    st["dialog"] = True         # a Save dialog left open
+    out = {"ok": False, "why": "did not happen in 30 s: the download in Downloads (or a Save dialog)"}
+elif step == "everyday-notify" and st.get("dialog"):
+    out = {"ok": False, "why": "did not happen in 15 s: openlayer>>quickshell:notificationPopup (a Save dialog from before covers it)"}
 elif step == "files-preview":
     out = {"ok": True, "picture_ms": j(400), "pdf_ms": j(900)}
 elif step == "praxis":
     out = {"ok": True, "list_ms": j(1300), "history": 0, "rows": 0}
 elif step == "update-check":
-    out = {"ok": True, "seconds": j(12), "waiting": 0}
+    out = ({"ok": False, "outside": True, "seconds": 3, "why": "the check ended failed/exit-code (status 1): failed retrieving file"}
+           if outside else {"ok": True, "seconds": j(12), "waiting": 0})
 elif step == "suspend":
     st["power"] = "suspended"
 elif step == "desktop":
@@ -144,6 +284,9 @@ elif step == "settle":
 elif step == "update-done":
     out = {"ok": True}
 # the suites
+elif step == "apps-wait" and outside and args[0] == "zed":
+    out = {"done": True, "ok": False, "outside": True, "result": {"result": "offline"}, "phase": "Downloading 3 of 9",
+           "password": False, "why": "Apps could not get it: offline"}
 elif step == "apps-wait":
     failed = bad and args[0] == "libreoffice"
     out = {"done": True, "ok": not failed, "result": {"result": "failed" if failed else "ok"}, "phase": "Installing",
@@ -152,7 +295,12 @@ elif step == "creator-record":
     out = ({"ok": False, "ratio": 0.82, "opacity": 0.82, "why": "the window not in use came out at 82% of its brightness in use "
             "(Hyprland's inactive_opacity is 0.82): the recording is dark"} if bad else {"ok": True, "ratio": 0.99, "opacity": 1.0})
 elif step == "creator-youtube":
-    out = {"ok": True, "dropped_pct": j(1.2), "cpu_pct": j(55), "played_s": 598, "sound_level": 0.3}
+    out = ({"ok": False, "outside": True, "why": "the video did not start playing within a minute"} if outside else
+           {"ok": True, "dropped_pct": j(1.2), "cpu_pct": j(55), "played_s": 598, "sound_level": 0.3})
+elif step == "creator-video":
+    h264 = args[0].endswith(".mp4")
+    out = ({"ok": False, "why": "Thyris cannot play it (media error 4: MEDIA_ELEMENT_ERROR: Format error)"} if bad and h264 else
+           {"ok": True, "dropped_pct": j(0.4), "cpu_pct": j(38), "played_s": 600, "sound_level": 0.31, "url": args[0]})
 elif step == "office-open":
     out = {"ok": True, "open_ms": 3000, "mtime": 1.0}
 elif step == "office-zoom":
@@ -194,6 +342,28 @@ def setup(tmp):
     os.makedirs(f"{tmp}/bin")
     open(f"{tmp}/bin/gcloud", "w").write(FAKE_GCLOUD)
     os.chmod(f"{tmp}/bin/gcloud", 0o755)
+    # tools/vm-smoke's test repo (REPO_ONLY) and the day of Arch, as stand-ins: they need the bucket and the built packages
+    open(f"{repo}/tools/vm-smoke", "w").write('#!/bin/sh\n[ -n "$REPO_ONLY" ] || exit 1\nmkdir -p "$REPO_ONLY"\n'
+                                              'echo test > "$REPO_ONLY/tacit.db.tar.zst"\necho "test repo: $REPO_ONLY"\n')
+    open(f"{repo}/tools/arch-day", "w").write("#!/bin/sh\necho 2026/10/29\n")
+    for f in ("vm-smoke", "arch-day"):
+        os.chmod(f"{repo}/tools/{f}", 0o755)
+    # the lived-in settings file: the shell's own lived.json when it is here, else one with the same old defaults
+    os.makedirs(f"{tmp}/releases")
+    real = "/home/abdul/dev/tacit-fix/wt-115/tests/config/releases/lived.json"
+    if os.path.exists(real):
+        shutil.copy(real, f"{tmp}/releases/lived.json")
+    else:
+        json.dump({"configVersion": 4, "audio": {"protection": {"maxAllowed": 99}}, "hyprland": {"input": {"kbLayout": "us"}},
+                   "dock": {"pinnedApps": ["praxis", "foot", "thyris"]}, "background": {"wallpaperPath": ""}}, open(f"{tmp}/releases/lived.json", "w"))
+    # the local video, as made: small stand-ins under the recipe's stamp, so no 10-minute video is made here
+    tool = importlib.machinery.SourceFileLoader("db0", f"{HERE}/daily-bench").load_module()
+    media = f"{repo}/out/x86_64/daily-media"
+    os.makedirs(media)
+    for n in tool.MEDIA:
+        open(f"{media}/{n}", "wb").write(b"stand-in video " + n.encode())
+    import hashlib
+    open(f"{media}/recipe", "w").write(hashlib.sha256(json.dumps([tool.MEDIA, tool.TONE, 600]).encode()).hexdigest()[:12] + "\n")
     return repo
 
 
@@ -202,13 +372,19 @@ def bench(tmp, repo, *args, **env):
     shutil.rmtree(remote, ignore_errors=True)
     os.makedirs(remote)
     e = {k: v for k, v in os.environ.items() if k != "TACIT_VM_PASSWORD"}
-    e.update(PATH=f"{tmp}/bin:{os.environ['PATH']}", FAKE_REMOTE=remote, **env)
+    e.update(PATH=f"{tmp}/bin:{os.environ['PATH']}", FAKE_REMOTE=remote, TACIT_SHELL_RELEASES=f"{tmp}/releases", **env)
     t = time.time()
     p = subprocess.run([sys.executable, f"{repo}/tools/daily-bench", *args], capture_output=True, text=True, env=e, timeout=1200)
     fake = json.load(open(f"{remote}/tacit-vm/fake.json")) if os.path.exists(f"{remote}/tacit-vm/fake.json") else {}
     log = open(f"{remote}/tacit-vm/daily/run.log").read() if os.path.exists(f"{remote}/tacit-vm/daily/run.log") else ""
     print(f"  ({time.time() - t:.0f} s)")
     return p, fake, log
+
+
+def latest(repo, base):
+    """the newest run of a kind: daily-1.2.15, then daily-1.2.15.2, ..."""
+    names = [f[:-5] for f in os.listdir(f"{repo}/out/x86_64") if re.fullmatch(re.escape(base) + r"(\.\d+)?\.json", f)]
+    return max(names, key=lambda n: int(n.rsplit(".", 1)[1]) if re.search(r"\.\d+$", n[len(base):]) else 1)
 
 
 def read(repo, name):
@@ -235,8 +411,8 @@ def fake_runs(tmp):
     check("it ends well", p.returncode == 0, p.stderr[-500:] + log[-800:])
     rec, md = read(repo, "daily-1.2.15")
     want = {k for k in ("sound", "wallpaper", "files-preview", "lock", "sleep", "update-check", "search", "notch", "praxis")}
-    check("every daily task ran twice and passed", set(rec["tasks"]) == want and all(t["runs"] == 2 == t["passed"] for t in rec["tasks"].values()),
-          {k: (t["passed"], t["runs"], t["why"]) for k, t in rec["tasks"].items()})
+    check("every daily task ran twice and worked", set(rec["tasks"]) == want and all(t["runs"] == 2 == t["worked"] for t in rec["tasks"].values()),
+          {k: (t["worked"], t["runs"], t["why"], t["unmeasured_why"]) for k, t in rec["tasks"].items()})
     m = rec["metrics"]
     for k, n in (("start.settings.cold", 2), ("start.thyris.warm", 2), ("page.load", 5), ("boot.sign_in", 2), ("boot.desktop", 2),
                  ("search.shown", 2), ("notch.shown", 4), ("pss.shell", 3), ("cpu.all", 5), ("growth.shell", 1), ("wake.desktop", 2)):
@@ -255,6 +431,16 @@ def fake_runs(tmp):
     check("no ACCOUNT or HARDWARE step is passed by the run", not marked, marked)
     check("the scorecard names each suite in the person's words", all(f"## {t}" in md for t, _ in tool.SUITES.values()))
     check("the scorecard says report only", "Report only" in md)
+    parts = [x["name"] for x in rec["parts"]]
+    check("each part from the known state: daily-start saved as found, daily-base after the setup, loaded before every part "
+          "but the first, daily-start loaded at the end and both deleted",
+          rec["isolated"] and parts[:3] == ["starts", "tasks", "rest"] and "starts from power on" in parts
+          and order(fake["log"], "snapshot save daily-start", "snapshot save daily-base", "start settings cold", "snapshot load daily-base",
+                    "ready", "snapshot load daily-base", "snapshot load daily-start", "snapshot delete daily-base", "snapshot delete daily-start")
+          and sum(1 for x in fake["log"] if x == "snapshot load daily-base") == len(parts) - 1 and rec["left_as_found"] == "daily-start loaded",
+          (parts, [x for x in fake["log"] if x.startswith("snapshot")]))
+    check("the scorecard says each part started from the same saved state", "Each part started from the same saved state" in md)
+    check("the stand-in's answers here are the assumed ones, said so", fake["sources"]["assumed"] > 0 and fake["sources"]["recorded"] == 0, fake["sources"])
 
     print("the same release again: the second run is .2, compared with the first (the spread)")
     p, fake, log = bench(tmp, repo, "1.2.15", "--runs", "2", "--compare", "1.2.15", TACIT_VM_PASSWORD="pw-4711", FAKE_SCENARIO="good")
@@ -262,7 +448,7 @@ def fake_runs(tmp):
     check("written as daily-1.2.15.2", p.returncode == 0 and rec2["version"] == "1.2.15", p.stderr[-300:])
     worse = [c for c in rec2["compare"]["changes"] if c["worse"]]
     check("two runs of one release: nothing clearly worse", not [c for c in worse if c["clear"] and c.get("unit")], worse)
-    learned = tool.margins(f"{repo}/out/x86_64", "short")
+    learned = tool.margins(f"{repo}/out/x86_64", "")
     check("the pair of runs gives learned margins", len(learned) > 10, len(learned))
 
     print("a release with faults (1.2.16): no Thyris sound, a crash, a slow Thyris, a leak, a dark OBS recording, LibreOffice not got")
@@ -270,9 +456,9 @@ def fake_runs(tmp):
                          TACIT_VM_PASSWORD="pw-4711", FAKE_SCENARIO="bad", FAKE_TACIT="1.2.16")
     check("report only: it still ends well", p.returncode == 0, p.stderr[-300:] + log[-500:])
     rec, md = read(repo, "daily-1.2.16")
-    check("sound failed", rec["tasks"]["sound"]["passed"] == 0)
+    check("sound failed", rec["tasks"]["sound"]["worked"] == 0 and rec["tasks"]["sound"]["failed"] == 1)
     check("the notch's click-away failed, and the surface it left is counted",
-          rec["tasks"]["notch"]["passed"] == 0 and any("islandAway" in s for s in rec["reliability"]["stuck"]))
+          rec["tasks"]["notch"]["failed"] == 1 and any("islandAway" in s for s in rec["reliability"]["stuck"]))
     cr = rec["suites"]["creator"]["steps"]["record-unfocused"]
     check("the OBS recording of a window not in use is caught as dark, with inactive_opacity named",
           cr["status"] == "failed" and "inactive_opacity is 0.82" in cr["why"], cr)
@@ -293,15 +479,184 @@ def fake_runs(tmp):
     rec, md = read(repo, "daily-1.2.16.2")
     check("lock, sleep, the start and the update are said not run, not failed",
           "lock" not in rec["tasks"] and "sleep" not in rec["tasks"] and len(rec["not_run"]) == 4 and "no password" in md, rec["not_run"])
-    check("nothing typed but the search's word", [k for k in fake["keys"] if k[0] == "type"] == [["type", "graphis"]], fake["keys"])
+    check("nothing typed but the search's word", [k[-1] for k in fake["keys"] if k[0] == "type"] == ["graphis"], fake["keys"])
 
     print("a soak (20 s stands for 8 h)")
     p, fake, log = bench(tmp, repo, "1.2.15", "--soak", "20s", "--runs", "1", TACIT_VM_PASSWORD="pw-4711", FAKE_SCENARIO="good")
     rec, md = read(repo, "daily-1.2.15-soak")
     check("a soak record, with rounds, the update through Restart, and growth an hour",
-          p.returncode == 0 and rec["mode"] == "soak" and rec.get("soak_rounds", 0) >= 1 and rec["tasks"]["update"]["passed"] == 1
+          p.returncode == 0 and rec["mode"] == "soak" and rec.get("soak_rounds", 0) >= 1 and rec["tasks"]["update"]["worked"] == 1
           and rec["metrics"].get("growth.shell", {}).get("unit") == "MB/h", (p.stderr[-300:], rec.get("soak_rounds"), rec["tasks"].get("update")))
     check("the soak is reported as one", "8-hour soak" in md)
+
+    print("in German: the computer set to de_DE.UTF-8 and a German keyboard for the run, then put back")
+    p, fake, log = bench(tmp, repo, "1.2.15", "--lang", "de", "--runs", "1", TACIT_VM_PASSWORD="pw-4711", FAKE_SCENARIO="good")
+    rec, md = read(repo, "daily-1.2.15-de")
+    check("it ends well", p.returncode == 0, p.stderr[-300:] + log[-600:])
+    check("the Network page's IP, the VPN and the lock with the layout: each passed",
+          all(rec["tasks"].get(k, {}).get("worked") == 1 for k in ("lang-network", "lang-vpn", "lang-lock")), rec["tasks"])
+    check("the scorecard names the language the run used", "Language: de_DE.UTF-8, keyboard de (set for this run: German (de_DE.UTF-8, keyboard de))." in md, md[:600])
+    check("set, restarted, signed in, checked; at the end the computer as found loaded (its own language again)",
+          order(fake["log"], "snapshot save daily-start", "lang-set", "systemctl reboot", "result enter-usable", "snapshot save daily-base",
+                "lang-network", "lang-vpn", "snapshot load daily-start") and fake["lang"]["lang"] == "en_GB.UTF-8", fake["log"][-12:])
+    check("the password typed for the keyboard the computer had: German while it was German",
+          [k for k in fake["keys"] if k[0] == "type" and k[-1] == "pw-4711"] and all(k[1] == "--de" for k in fake["keys"] if k[0] == "type"),
+          [k for k in fake["keys"] if k[0] == "type"])
+    check("a language run is compared only with runs in that language (none yet)", "compare" not in rec)
+
+    print("in Russian (us,ru), as a release with the language faults: no IP, no VPN, the lock refuses the password typed with Russian active")
+    p, fake, log = bench(tmp, repo, "1.2.15", "--lang", "ru", "--suites-only", "--suite", "everyday", TACIT_VM_PASSWORD="pw-4711", FAKE_SCENARIO="bad")
+    rec, md = read(repo, "daily-1.2.15-ru")
+    t = rec["tasks"]
+    check("it ends well (report only)", p.returncode == 0, p.stderr[-300:] + log[-600:])
+    check("the Network page and the VPN fail, the language named", t["lang-network"]["failed"] == 1 and "ru_RU.UTF-8" in t["lang-network"]["why"][0]
+          and t["lang-vpn"]["failed"] == 1, t)
+    check("the lock refuses the password typed with Russian active, and says so",
+          t["lang-lock"]["failed"] == 1 and "typed with Russian active did not unlock" in t["lang-lock"]["why"][0]
+          and t["lang-lock"]["retries"] and t["lang-lock"]["retries"][0]["second"] == "unlocked with the Latin layout", t["lang-lock"])
+    check("Russian was made active (Alt+Shift) before Super+L, as a person typing Russian has it",
+          order(fake["log"], "key alt shift", "arm lock", "key meta_l l", "arm enter-unlocked"), fake["log"])
+    check("the run went on (the second layout, as a person would try next) and the suite ran: suites only, no daily tasks",
+          "## Can anyone use it every day?" in md and "sound" not in t, list(t))
+    check("the scorecard names Russian and its keyboard", "keyboard us,ru (set for this run: Russian (ru_RU.UTF-8, keyboard us,ru))" in md, md[:600])
+
+    print("an update over a lived-in home, from 1.2.14, in German (the old US override shows only on a non-US keyboard)")
+    p, fake, log = bench(tmp, repo, "1.2.15", "--lived-in", "--lang", "de", "--runs", "1", TACIT_VM_PASSWORD="pw-4711",
+                         FAKE_SCENARIO="good", FAKE_TACIT="1.2.14", FAKE_TACIT_AFTER="1.2.15")
+    rec, md = read(repo, "daily-1.2.15-lived-in-de")
+    check("it ends well", p.returncode == 0, p.stderr[-300:] + log[-800:])
+    check("started on 1.2.14, the home made, updated through Restart from tools/vm-smoke's test repo, then judged on that home",
+          rec["lived_in"]["from"] == "1.2.14" and os.path.exists(f"{tmp}/remote/tacit-vm/daily/repo/tacit.db.tar.zst")
+          and order(fake["log"], "preflight 1.2.14", "lang-set", "lived-in-home", "vm-smoke-guest update", "systemctl reboot",
+                    "result enter-usable", "vm-smoke-guest restore-pacman", "lived-in-check 1.2.15", "preflight 1.2.15"), fake["log"][:40])
+    home = fake.get("seen_home") or {}
+    check("the home is the release's own settings file: Loudest allowed 99, keyboard \"us\"",
+          home.get("audio", {}).get("protection", {}).get("maxAllowed") == 99 and home.get("hyprland", {}).get("input", {}).get("kbLayout") == "us")
+    check("each lived-in check in its section, one not judged and why", "## The update over a lived-in home (from 1.2.14, lived.json)" in md
+          and "- ok: choices kept" in md and "- not judged: mirror list: tacit-session did not change in this release" in md, md[:2500])
+    check("then the short run on that home, and the computer as found loaded at the end (the release before, its own home)",
+          rec["tasks"]["sound"]["runs"] == 1 and order(fake["log"], "lived-in-check", "snapshot save daily-base", "snapshot load daily-start")
+          and fake["tacit"] == "1.2.14" and fake.get("lived_home") is None, fake["log"][-20:])
+
+    print("the same over 1.2.16, where the copied hypridle.conf and the old US override still win")
+    p, fake, log = bench(tmp, repo, "1.2.16", "--lived-in", "--lang", "de", "--runs", "1", TACIT_VM_PASSWORD="pw-4711",
+                         FAKE_SCENARIO="bad", FAKE_TACIT="1.2.15", FAKE_TACIT_AFTER="1.2.16")
+    rec, md = read(repo, "daily-1.2.16-lived-in-de")
+    ch = {c["metric"]: c for c in (rec.get("compare") or {}).get("changes", [])}
+    check("both fail, each in the person's words", "- FAIL: idle fixes reach: hypridle still reads the old copy in the home" in md
+          and "- FAIL: keyboard as installed: the keyboard is 'us', not 'de' as installed" in md, md[:2500])
+    check("compared with 1.2.15's lived-in German run, both flagged worse", ch.get("lived_in.idle fixes reach", {}).get("worse")
+          and ch.get("lived_in.keyboard as installed", {}).get("worse") and rec["compare"]["with"] == "1.2.15", list(ch))
+
+    print("outside Tacit: a mirror fails Zed's download, YouTube does not play, the check for updates' mirror is down")
+    p, fake, log = bench(tmp, repo, "1.2.15", "--runs", "1", "--suite", "creator", "--suite", "developer",
+                         TACIT_VM_PASSWORD="pw-4711", FAKE_SCENARIO="good", FAKE_OUTSIDE="1")
+    rec, md = read(repo, "daily-1.2.15.3")
+    t, cr, dv = rec["tasks"], rec["suites"]["creator"]["steps"], rec["suites"]["developer"]["steps"]
+    check("the check for updates could not be measured (its mirror): not Tacit's failure", t["update-check"]["unmeasured"] == 1
+          and t["update-check"]["failed"] == 0 and "| Updates: a check for updates | 0 | 0 | 1 |" in md, md[:1800])
+    check("Zed's install could not be measured (its mirror), and what needed it says so", dv["zed-install"]["status"] == "unmeasured"
+          and dv["zed-install"]["why"].startswith("outside Tacit") and "which could not be measured" in dv["zed-folder"]["why"], dv["zed-folder"])
+    check("YouTube is outside; the local VP9 and H.264 videos played from the cloud machine",
+          cr["youtube"]["status"] == "unmeasured" and cr["video-vp9"]["status"] == "worked" and cr["video-h264"]["status"] == "worked"
+          and cr["video-vp9"]["detail"]["url"].startswith("http://10.0.2.2:") and cr["video-vp9"]["detail"]["url"].endswith("/media/tacit-daily-vp9.webm"),
+          {k: cr[k].get("status") for k in ("youtube", "video-vp9", "video-h264")})
+    check("the videos were copied to the cloud machine once, as made", all(os.path.exists(f"{tmp}/remote/tacit-vm/media/{n}") for n in tool.MEDIA))
+    check("the suites' verdicts leave the outside failures out", "## Can a streamer use it? Works." in md and "## Can a developer use it? Works." in md, md[:3000])
+    um = md.split("## Could not measure")[-1].split("\n## ")[0]
+    check("the Could not measure section lists all three as outside Tacit", "## Could not measure" in md
+          and "Zed got from Apps: outside Tacit: Apps could not get it: offline" in um and "YouTube" in um and "failed retrieving file" in um, um[:900])
+
+    print("one suite's stuck dialog: with snapshots the next suite does not see it; without, it does")
+    for snap in (True, False):
+        env = dict(TACIT_VM_PASSWORD="pw-4711", FAKE_SCENARIO="good", FAKE_SPILL="1")
+        if not snap:
+            env["FAKE_NO_SNAPSHOT"] = "1"
+        p, fake, log = bench(tmp, repo, "1.2.15", "--suites-only", "--suite", "creator", "--suite", "everyday", **env)
+        rec, md = read(repo, latest(repo, "daily-1.2.15"))
+        n = rec["suites"]["everyday"]["steps"]["notify"]
+        if snap:
+            check("with snapshots: the creator suite's Save dialog is gone when the everyday suite starts", rec["isolated"]
+                  and rec["suites"]["creator"]["steps"]["download"]["status"] == "failed" and n["status"] == "worked", n)
+        else:
+            check("without them (the save refused): it spills into the next suite, and the scorecard says the parts were not isolated",
+                  not rec["isolated"] and n["status"] == "failed" and "Each part started where the one before left the computer" in md
+                  and "No space left" in md, (n, md[:700]))
+
+    print("UEFI variables still raw: the run makes them qcow2 once (off, prepare, on, sign-in), then saves")
+    p, fake, log = bench(tmp, repo, "1.2.15", "--suites-only", "--suite", "everyday", TACIT_VM_PASSWORD="pw-4711",
+                         FAKE_SCENARIO="good", FAKE_PFLASH_RAW="1")
+    rec, md = read(repo, latest(repo, "daily-1.2.15"))
+    check("refused, prepared, saved", rec["isolated"] and order(fake["log"], "snapshot save daily-start", "systemctl poweroff",
+          "snapshot prepare", "disk", "result enter-usable", "snapshot save daily-start", "snapshot save daily-base"), fake["log"][:30])
+
+    print("the VM's machinery failing: an agent that misses once, a step it never answers, a key QEMU refuses")
+    p, fake, log = bench(tmp, repo, "1.2.15", "--runs", "1", TACIT_VM_PASSWORD="pw-4711", FAKE_SCENARIO="good",
+                         FAKE_FLAKY_AGENT="praxis", FAKE_DEAD="files-preview", FAKE_KEY_FAIL="spc")
+    rec, md = read(repo, latest(repo, "daily-1.2.15"))
+    t = rec["tasks"]
+    check("the agent missing once: tried again, it worked, and the fault is noted", t["praxis"]["worked"] == 1
+          and any(x["what"] == "guest praxis" for x in rec["infra"]), (t["praxis"], rec["infra"][:3]))
+    check("a step never answered: could not be measured, never a failure, never a pass", t["files-preview"]["unmeasured"] == 1
+          and t["files-preview"]["failed"] == 0 and t["files-preview"]["worked"] == 0
+          and "no answer from the test computer to files-preview" in t["files-preview"]["unmeasured_why"][0], t["files-preview"])
+    check("a key QEMU refused twice: the notch could not be measured", t["notch"]["unmeasured"] == 1 and t["notch"]["failed"] == 0
+          and "tools/vm key failed twice" in t["notch"]["unmeasured_why"][0], t["notch"])
+    check("the scorecard counts the three apart, and lists what could not be measured",
+          re.search(r"- Checks: \d+ worked, 0 failed, 2 could not be measured", md) and "## Could not measure" in md
+          and "| The notch opens and closes, with Esc and with a click outside | 0 | 0 | 1 |" in md, md[:1400])
+
+    print("a check done twice: the first unlock fails (a dropped key), the second works; both kept")
+    p, fake, log = bench(tmp, repo, "1.2.15", "--runs", "1", TACIT_VM_PASSWORD="pw-4711", FAKE_SCENARIO="good", FAKE_UNLOCK_FIRST_FAILS="1")
+    rec, md = read(repo, latest(repo, "daily-1.2.15"))
+    check("the lock worked on the second try, and both results are in the record and the scorecard",
+          rec["tasks"]["lock"]["worked"] == 1 and rec["tasks"]["lock"]["retries"][0]["first"].startswith("not unlocked")
+          and "## Tried twice" in md and "first not unlocked within 40 s of the press; then worked" in md, (rec["tasks"]["lock"], md[-1500:]))
+
+    print("--repeat 3 on one build, with a wallpaper check that fails every other time")
+    p, fake, log = bench(tmp, repo, "1.2.15", "--runs", "1", "--repeat", "3", "--compare", "1.2.15", TACIT_VM_PASSWORD="pw-4711",
+                         FAKE_SCENARIO="good", FAKE_FLAKY="wallpaper")
+    rec, md = read(repo, latest(repo, "daily-1.2.15"))
+    w, snd = rec["tasks"]["wallpaper"], rec["tasks"]["sound"]
+    check("three repeats, each from the known state", rec["repeat"] == 3 and [x["repeat"] for x in rec["parts"]].count(2) == 4
+          and sum(1 for x in fake["log"] if x == "snapshot load daily-base") == 3 * 4 - 1, [(x["name"], x["repeat"]) for x in rec["parts"]])
+    check("the wallpaper check is unstable (it both worked and failed), the sound check 3 of 3 the same",
+          w["unstable"] and w["by_repeat"] == ["worked", "failed", "worked"] and not snd["unstable"] and snd["agreement"] == "3 of 3 repeats the same",
+          (w.get("by_repeat"), w.get("agreement"), snd.get("agreement")))
+    ch = {c["metric"]: c for c in rec["compare"]["changes"]}
+    check("unstable: marked in the scorecard, and left out of the comparison", "task.wallpaper" not in ch and "unstable" in ch
+          and "## Unstable on this build" in md and "| A wallpaper change shows | 2 | 1 | 0 | unstable (2 of 3 repeats the same)" in md, (list(ch), md[:1800]))
+
+    print("a recorded run replayed: tools/daily-bench --record, then the stand-in answering only from that recording")
+    rdir = f"{tmp}/recorded"
+    # a version of its own (1.2.17), so this faulty run does not count as one of 1.2.15's pair that sets the margins
+    p, fake, log = bench(tmp, repo, "1.2.17", "--runs", "1", "--suite", "everyday", "--record", rdir, TACIT_VM_PASSWORD="pw-4711",
+                         FAKE_SCENARIO="bad", FAKE_TACIT="1.2.17")
+    first, _ = read(repo, latest(repo, "daily-1.2.17"))
+    ex = [json.loads(x) for x in open(f"{rdir}/exchanges.jsonl")] if os.path.exists(f"{rdir}/exchanges.jsonl") else []
+    check("the recording holds every exchange with the VM, with the run's record, scorecard and how it was made",
+          len(ex) > 100 and all(os.path.exists(f"{rdir}/{f}") for f in ("daily.json", "daily.md", "meta.json"))
+          and any(e["argv"][:1] == ["snapshot"] for e in ex), (len(ex), os.listdir(rdir) if os.path.isdir(rdir) else None))
+    p, fake, log = bench(tmp, repo, "1.2.17", "--runs", "1", "--suite", "everyday", TACIT_VM_PASSWORD="pw-4711",
+                         FAKE_REPLAY=f"{rdir}/exchanges.jsonl")
+    again, _ = read(repo, latest(repo, "daily-1.2.17"))
+    same = lambda r: ({k: (t["worked"], t["failed"], t["unmeasured"]) for k, t in r["tasks"].items()},
+                      {k: st["status"] for k, st in r["suites"]["everyday"]["steps"].items()})
+    check("replayed, every answer came from the recording, and the run judged the same", fake["sources"]["recorded"] > 100
+          and fake["sources"]["assumed"] == 0 and fake["sources"]["missing"] == 0 and same(again) == same(first),
+          (fake["sources"], fake.get("missing", [])[:5], same(again) == same(first)))
+    fixtures = sorted(glob.glob(f"{HERE}/daily-bench-fixtures/*/exchanges.jsonl"))
+    print(f"  recorded fixtures from real VM runs: {len(fixtures) or 'none yet'}"
+          + ("" if fixtures else " (the stand-in's answers above are ASSUMED; tools/daily-bench --record makes real ones)"))
+    for fx in fixtures:
+        meta = json.load(open(os.path.join(os.path.dirname(fx), "meta.json")))
+        want = json.load(open(os.path.join(os.path.dirname(fx), "daily.json")))
+        args = [x for x in meta["args"] if x != "--record"]
+        args = [x for k, x in enumerate(args) if k == 0 or args[k - 1] != "--record"]
+        p, fake, log = bench(tmp, repo, *args, TACIT_VM_PASSWORD="replayed", FAKE_REPLAY=fx)
+        got, _ = read(repo, latest(repo, f"daily-{meta['version']}"))
+        check(f"{os.path.basename(os.path.dirname(fx))}: replayed from a real run, judged as that run was",
+              fake["sources"]["missing"] == 0 and same(got) == same(want), fake.get("missing", [])[:5])
 
     print("no guest agent")
     p, fake, log = bench(tmp, repo, "1.2.15", FAKE_NO_AGENT="1")
@@ -327,7 +682,7 @@ def fake_runs(tmp):
     check("the computer's numbers and sightings in their own section", "## On a computer: Book4 Edge, by abdul" in md1
           and "The battery at rest: watts 4.1" in md1 and "The touchpad: failed: swipe up sent the window to a half" in md1, md1[-1200:])
     check("re-written later, beside a second run of its own, 1.2.16 still shows Thyris's slower start and the growth",
-          "Worse (clear): Thyris, cold start" in md1 and "Worse (clear): The shell: memory growth over the run" in md1, md1[-1800:])
+          "Worse (clear): Thyris, cold start" in md1 and "Worse (clear): The shell: memory growth over the tasks" in md1, md1[-1800:])
     check("a tester's failure on hardware shows as a problem, with who saw it", "the camera in a call: lost after sleep (seen by abdul on Book4 Edge)" in md1, md1[-2500:])
     check("a tester's pass shows as seen by them, not as the run's", "Seen working by a tester: YouTube heard over a Bluetooth speaker" in md1, md1[-1500:])
     shutil.copy(f"{repo}/out/x86_64/daily-1.2.16.md", f"{tmp}/sample-bad.md")
@@ -338,27 +693,115 @@ def real_parts(tmp):
     print("the parts that run for real here")
     g = importlib.machinery.SourceFileLoader("guest", f"{HERE}/daily-bench-guest").load_module()
     s = importlib.machinery.SourceFileLoader("suites", f"{HERE}/daily-bench-suites").load_module()
-    # pictures and PDFs: decoded by tools that are not ours
-    open(f"{tmp}/m.png", "wb").write(g.solid(120, 90, g.MAGENTA))
-    open(f"{tmp}/c.pdf", "wb").write(g.pdf(g.CYAN))
+    # the test patterns, decoded by tools that are not ours, and found by the pattern judge in what they decode to
+    open(f"{tmp}/m.png", "wb").write(g.grid_png(480, 270, g.WALL_A_GRID))
+    open(f"{tmp}/c.pdf", "wb").write(g.pdf(g.PDF_BANDS))
     open(f"{tmp}/two.pdf", "wb").write(s.two_page_pdf())
     if shutil.which("pdftoppm"):
-        for f, pages, colours in (("c.pdf", 1, [g.CYAN]), ("two.pdf", 2, [(0, 255, 255), (255, 255, 0)])):
+        for f, grids in (("c.pdf", [g.PDF_BANDS]), ("two.pdf", s.VIEWER_PAGES)):
             r = subprocess.run(["pdftoppm", "-r", "20", f"{tmp}/{f}", f"{tmp}/p-{f}"], capture_output=True)
             imgs = sorted(x for x in os.listdir(tmp) if x.startswith(f"p-{f}"))
-            ok = r.returncode == 0 and len(imgs) == pages and all(
-                g.fraction(g.parse_ppm(open(f"{tmp}/{i}", "rb").read()), g.near(c), 1) > 0.95 for i, c in zip(imgs, colours))
-            check(f"{f}: pdftoppm reads it, {pages} page(s) of the right colour", ok, (r.stderr, imgs))
+            found = [g.find_pattern(g.parse_ppm(open(f"{tmp}/{x}", "rb").read()), [[c] for c in bands], 0.5)[0]
+                     for x, bands in zip(imgs, grids)]
+            check(f"{f}: pdftoppm reads it, {len(grids)} page(s), each its bands top to bottom", r.returncode == 0
+                  and len(imgs) == len(grids) and all(found), (r.stderr, imgs, found))
+        r = subprocess.run(["pdftoppm", "-r", "20", f"{tmp}/two.pdf", f"{tmp}/q"], capture_output=True)
+        first = g.parse_ppm(open(sorted(f"{tmp}/{x}" for x in os.listdir(tmp) if x.startswith("q"))[0], "rb").read())
+        check("page 1 is not taken for page 2 (the bands the other way round)", not g.find_pattern(first, [[c] for c in s.VIEWER_PAGES[1]], 0.5)[0])
     else:
         print("  (no pdftoppm here: the PDFs not decoded)")
     if shutil.which("magick") or shutil.which("convert"):
         conv = shutil.which("magick") or shutil.which("convert")
         r = subprocess.run([conv, f"{tmp}/m.png", "ppm:-"], capture_output=True)
-        check("the PNG: ImageMagick reads it, all magenta", r.returncode == 0 and g.fraction(g.parse_ppm(r.stdout), g.near(g.MAGENTA), 1) == 1.0)
-    else:
-        import zlib
-        raw = zlib.decompress(open(f"{tmp}/m.png", "rb").read()[33 + 8:-12])
-        check("the PNG: its pixel data is magenta", raw[1:4] == bytes(g.MAGENTA))
+        check("the wallpaper pattern: ImageMagick reads it, and it is itself all over", r.returncode == 0
+              and g.full_screen_match(g.parse_ppm(r.stdout), g.WALL_A_GRID) > 0.99)
+    # the strict screen checks on made-up screens of 480x270 (a quarter of 1920x1080, as grim -s 0.25 gives them)
+    W_, H_ = 480, 270
+
+    def screen(grid=None, fill=(0, 0, 0), dim=1.0, cover=0.0, mirror=False):
+        rows = []
+        for y in range(H_):
+            line = bytearray()
+            for x in range(W_):
+                if y < cover * H_:
+                    c = (40, 40, 48)                        # the shell's bar and the like, over the top
+                elif grid:
+                    xx = W_ - 1 - x if mirror else x
+                    c = grid[y * len(grid) // H_][xx * len(grid[0]) // W_]
+                else:
+                    c = fill
+                line += bytes(int(v * dim) for v in c)
+            rows.append(bytes(line))
+        return (W_, H_, b"".join(rows))
+    m = g.full_screen_match
+    check("the wallpaper as itself, the bar over 10 % of the screen: shown", m(screen(g.WALL_A_GRID, cover=0.1), g.WALL_A_GRID) >= g.WALL_MATCH)
+    check("dimmed by 10 %: still shown", m(screen(g.WALL_A_GRID, dim=0.9), g.WALL_A_GRID) >= g.WALL_MATCH)
+    check("a black screen, whatever the settings say: not shown (2026-11-12)", m(screen(fill=(0, 0, 0)), g.WALL_A_GRID) < 0.05)
+    check("the other wallpaper: not taken for this one", m(screen(g.WALL_B_GRID), g.WALL_A_GRID) < 0.2)
+    check("mirrored: not shown", m(screen(g.WALL_A_GRID, mirror=True), g.WALL_A_GRID) < 0.5)
+    check("a quarter of it covered: not shown (under 80 %)", m(screen(g.WALL_A_GRID, cover=0.25), g.WALL_A_GRID) < g.WALL_MATCH)
+
+    def with_picture(grid, x0, y0, w, h, base=(235, 235, 240), blank=None):
+        rows = []
+        for y in range(H_):
+            line = bytearray()
+            for x in range(W_):
+                if x0 <= x < x0 + w and y0 <= y < y0 + h:
+                    r_, c_ = (y - y0) * len(grid) // h, (x - x0) * len(grid[0]) // w
+                    line += bytes((128, 128, 128) if blank == (r_, c_) else grid[r_][c_])
+                else:
+                    line += bytes(base)
+            rows.append(bytes(line))
+        return (W_, H_, b"".join(rows))
+    fp = g.find_pattern
+    check("Files' preview of the picture (75x56 of 480x270, 3 %): found", fp(with_picture(g.PICTURE_GRID, 380, 60, 75, 56), g.PICTURE_GRID, g.PREVIEW_AREA)[0])
+    check("a list's thumbnail of it (12x9): too small to be the preview", not fp(with_picture(g.PICTURE_GRID, 20, 40, 12, 9), g.PICTURE_GRID, g.PREVIEW_AREA)[0])
+    check("the preview with one cell blank (half drawn): not found", not fp(with_picture(g.PICTURE_GRID, 380, 60, 75, 56, blank=(1, 1)),
+                                                                           g.PICTURE_GRID, g.PREVIEW_AREA)[0])
+    check("the PDF's bands in order: found", fp(with_picture([[c] for c in g.PDF_BANDS], 390, 30, 60, 85), [[c] for c in g.PDF_BANDS], g.PREVIEW_AREA)[0])
+    check("the bands the other way round: not found", not fp(with_picture([[c] for c in reversed(g.PDF_BANDS)], 390, 30, 60, 85),
+                                                            [[c] for c in g.PDF_BANDS], g.PREVIEW_AREA)[0])
+    # settled, the wait helper, and the guest's mapping of what went wrong to the three outcomes
+    shots = iter([screen(fill=(10, 10, 10)), screen(fill=(60, 60, 60)), screen(g.WALL_A_GRID), screen(g.WALL_A_GRID)])
+
+    class Shots:
+        def shot(self):
+            return next(shots)
+    got = g.settled(Shots(), 5)
+    check("settled: the second of two equal screenshots in a row, after the changing ones", m(got, g.WALL_A_GRID) > 0.99)
+    flick = iter([screen(fill=(0, 0, 0)), screen(fill=(255, 255, 255))] * 100)
+
+    class Flicker:
+        def shot(self):
+            return next(flick)
+    try:
+        g.settled(Flicker(), 0.6)
+        check("a screen that never stops changing: not settled", False)
+    except g.Missed as e:
+        check("a screen that never stops changing: not settled, said so", str(e).startswith("did not happen in 0.6 s: the screen settled"), str(e))
+    t0 = time.time()
+    try:
+        g.until("a window of Settings mapped", lambda: False, 0.3, every=0.05)
+    except g.Missed as e:
+        check("until: on the deadline, \"did not happen in N s: <what>\", no sooner", str(e) == "did not happen in 0.3 s: a window of Settings mapped"
+              and 0.3 <= time.time() - t0 < 0.6, (str(e), time.time() - t0))
+    try:
+        g.until("the key listener ready", lambda: False, 0.1, setup=True)
+    except g.Unmeasurable:
+        check("until on a step's own setup: could not measure, not a failure", True)
+    n = [0]
+    check("until gives the condition's value as soon as it holds", g.until("x", lambda: (n.__setitem__(0, n[0] + 1) or n[0] >= 3) and "yes", 5, every=0.01) == "yes")
+    import contextlib, io
+    g.STATE = f"{tmp}/state"
+    for argv, want in ((["result", "nobody", "0.2"], "unmeasured"), (["start"], "unmeasured")):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            try:
+                g.main(argv)
+            except SystemExit:
+                pass
+        r = json.loads(buf.getvalue().strip().splitlines()[-1])
+        check(f"the guest's {argv[0]} without what it needs: {want}, said why", r["outcome"] == want and r["why"], r)
     # the OBS check's judging half: recordings encoded as OBS encodes them (x264), one of window B in use (light grey 225)
     # and one as inactive_opacity = 0.82 leaves it over black (184): read back by the step's own frame reader
     if shutil.which("ffmpeg"):
@@ -503,6 +946,151 @@ def real_parts(tmp):
         b.wait()
 
 
+def real_additions(tmp):
+    print("the additions' parts that run for real here")
+    g = importlib.machinery.SourceFileLoader("guest2", f"{HERE}/daily-bench-guest").load_module()
+    tool = importlib.machinery.SourceFileLoader("db2", f"{HERE}/daily-bench").load_module()
+    # the local video's recipe, 3 seconds of it, read back by ffprobe and ffmpeg
+    if shutil.which("ffmpeg") and shutil.which("ffprobe"):
+        files = tool.make_media(f"{tmp}/media", seconds=3)
+        for f, video in zip(files, ("vp9", "h264")):
+            pr = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_name:format=duration", "-of", "json", f],
+                                capture_output=True, text=True)
+            info = json.loads(pr.stdout or "{}")
+            codecs = sorted(x["codec_name"] for x in info.get("streams", []))
+            check(f"{os.path.basename(f)}: {video} with Opus sound, 3 s", codecs == sorted([video, "opus"])
+                  and abs(float(info.get("format", {}).get("duration", 0)) - 3) < 0.2, (codecs, info.get("format")))
+            frames = [subprocess.run(["ffmpeg", "-v", "error", "-ss", str(t), "-i", f, "-frames:v", "1", "-f", "image2pipe",
+                                      "-vcodec", "ppm", "-"], capture_output=True).stdout for t in (0.5, 2.5)]
+            check(f"{os.path.basename(f)}: the pattern moves", frames[0] and frames[1] and frames[0] != frames[1])
+            raw = subprocess.run(["ffmpeg", "-v", "error", "-i", f, "-f", "s16le", "-ac", "1", "-ar", "16000", "-"], capture_output=True).stdout
+            import struct
+            n = len(raw) // 2
+            peak = max((abs(v) for v in struct.unpack(f"<{n}h", raw[:n * 2])), default=0) / 32768 if n else 0
+            check(f"{os.path.basename(f)}: the tone is in it (loudest sample {peak:.2f})", peak > 0.2)
+        again = tool.make_media(f"{tmp}/media", seconds=3)
+        check("made once: a second call keeps the files", all(os.path.getmtime(x) == os.path.getmtime(y) for x, y in zip(files, again)))
+    else:
+        print("  (no ffmpeg here: the video recipe not run)")
+    # the old Settings' kb_layout line, as its own writer (scripts/hyprland/hyprconfigurator.py at 1.2.13) made it
+    shell_git = "/home/abdul/dev/tacit-fix/tacit-shell"
+    old = subprocess.run(["git", "-C", shell_git, "show", "ca089d1:scripts/hyprland/hyprconfigurator.py"], capture_output=True, text=True)
+    if old.returncode == 0:
+        open(f"{tmp}/hyprconfigurator.py", "w").write(old.stdout)
+        hc = importlib.machinery.SourceFileLoader("hc", f"{tmp}/hyprconfigurator.py").load_module()
+        check("the override line is the one Settings > Hyprland wrote up to 1.2.13", hc.to_lua_line("input:kb_layout", "us") == g.OVERRIDE,
+              (hc.to_lua_line("input:kb_layout", "us"), g.OVERRIDE))
+    else:
+        print("  (no tacit-shell clone here: the override line not compared with the old writer)")
+    real = "/home/abdul/dev/tacit-fix/wt-115/tests/config/releases/lived.json"
+    if os.path.exists(real):
+        lv = json.load(open(real))
+        check("the shell's lived.json holds the old defaults the run starts from (99, \"us\")",
+              lv["audio"]["protection"]["maxAllowed"] == 99 and lv["hyprland"]["input"]["kbLayout"] == "us")
+    # the lived-in judging itself, on stand-in files: a release that gets it right, and one like 1.2.15 as it stands
+    old_idle = "general {\n    lock_cmd = lock\n}\nlistener {\n    timeout = 300\n    on-timeout = lock\n}\n"
+    new_idle = old_idle.replace("on-timeout = lock\n", "on-timeout = lock\n    on-resume = wifi-after-sleep\n")
+    check("the copy Settings makes keeps everything but the lock's time", g.chosen_idle(old_idle) == old_idle.replace("300", "600"))
+    for name, fixed in (("an update that gets the lived-in home right", True),
+                        ("one that leaves the copy, the override, 99, \"us\" and the mirror list", False)):
+        r = lived_check(g, f"{tmp}/lived-{fixed}", old_idle, new_idle, fixed)
+        c = r.get("checks", {})
+        if fixed:
+            check(f"{name}: every check passes", r.get("ok") and all(v[0] in (True, None) for v in c.values()), c)
+        else:
+            bad = {k for k, v in c.items() if v[0] is False}
+            check(f"{name}: each fails, and nothing else",
+                  bad == {"old volume default", "old keyboard default", "idle fixes reach", "keyboard as installed", "mirror list"}, c)
+    # the probe: the shell's own Network and Vpn services in a copy of the shell, in a language, with real and with
+    # translated nmcli output
+    shell = os.environ.get("DAILY_TEST_SHELL")
+    if not shell and os.path.isdir(shell_git):
+        shell = f"{tmp}/shell"
+        os.makedirs(shell)
+        subprocess.run(f"git -C {shell_git} archive release-1.2.15 | tar -x -C {shell}", shell=True, check=True)
+    if not (shell and shutil.which("qs")):
+        print("  (no shell tree or no quickshell here: the probe not run)")
+        return
+    run = tempfile.mkdtemp(prefix="daily-run.")        # quickshell's runtime folder of its own, not the desktop's
+    os.chmod(run, 0o700)
+    base = {"PATH": os.environ["PATH"], "XDG_RUNTIME_DIR": run, "USER": os.environ.get("USER", ""), "LOGNAME": os.environ.get("USER", "")}
+    up = subprocess.run(["nmcli", "-t", "-f", "TYPE,STATE", "device", "status"], capture_output=True, text=True).stdout
+    if re.search(r"^(wifi|ethernet):connected$", up, re.M):
+        r = g.probe(shell, f"{tmp}/probe-real", dict(base, LANG="C.UTF-8"), want=lambda st: bool(st.get("ip")), timeout=20)
+        check(f"this computer's nmcli: the Network page's IP is there ({r.get('ip')})", bool(r.get("ip")), r)
+    else:
+        print("  (this computer has no connected network: the probe on real nmcli not run)")
+    fake = f"{tmp}/nmcli-de"
+    os.makedirs(fake)
+    open(f"{fake}/nmcli", "w").write(TRANSLATED_NMCLI)
+    os.chmod(f"{fake}/nmcli", 0o755)
+    # waited for as the bench waits: until an IP shows, for at most 8 s, then the view as it stands
+    r = g.probe(shell, f"{tmp}/probe-de", dict(base, PATH=f"{fake}:{base['PATH']}", LANG="de_DE.UTF-8"),
+                want=lambda st: bool(st.get("ip")), timeout=8)
+    check("nmcli translating its terse output (round 2's S006, S008): the probe finds no IP and the VPN not active",
+          r.get("ip") == "" and r.get("vpn") == [{"name": "tacit-daily-vpn", "kind": "wireguard", "active": False}]
+          and r.get("connected") is False, r)
+    shutil.rmtree(run, ignore_errors=True)
+
+
+TRANSLATED_NMCLI = """#!/bin/sh
+# nmcli as round 2's S006 and S008 describe it: terse output in the person's language (German)
+case "$*" in
+  *"DEVICE,TYPE,STATE device status"*) echo "wlan0:wifi:verbunden" ;;
+  *"device show"*) printf 'GENERAL.DEVICE:wlan0\\nIP4.ADDRESS[1]:192.168.1.23/24\\nIP4.GATEWAY:192.168.1.1\\n' ;;
+  *"NAME,TYPE,ACTIVE connection show"*) echo "tacit-daily-vpn:wireguard:ja" ;;
+  monitor*) sleep 30 ;;
+esac
+"""
+
+
+def lived_check(g, d, old_idle, new_idle, fixed):
+    """step_lived_in_check run on stand-in files: the home after an update that got it right, or one that did not"""
+    import contextlib, io
+    os.makedirs(f"{d}/state")
+    os.makedirs(f"{d}/home/.config/hypr")
+    g.STATE, g.VCONSOLE, g.MIRRORS, g.UPDATE_RESULT = f"{d}/state", f"{d}/vconsole.conf", f"{d}/mirrorlist", f"{d}/update-result"
+    open(g.VCONSOLE, "w").write("XKBLAYOUT=de\n")
+    open(g.MIRRORS, "w").write("# Tacit\nServer = https://mirror.tacitos.co/$repo/os/$arch\n" if fixed else "Server = https://archive.example/$repo\n")
+    open(g.UPDATE_RESULT, "w").write('{"ok": true}')
+    open(f"{d}/hypridle.conf", "w").write(new_idle)
+    g.packaged_hypridle = lambda: f"{d}/hypridle.conf"
+    json.dump({"maxAllowed": 99, "kbLayout": "us", "pins": ["praxis", "foot", "org.mozilla.firefox"], "wallpaper": "/w.jpg",
+               "choices": g.CHOICES, "idle_before": old_idle, "packaged_idle": f"{d}/hypridle.conf", "session": ["0.2.1-58"]},
+              open(f"{d}/state/lived-home.json", "w"))
+    cfg = {"audio": {"protection": {"maxAllowed": 100 if fixed else 99}}, "hyprland": {"input": {"kbLayout": "" if fixed else "us"}},
+           "dock": {"pinnedApps": ["praxis", "foot", "org.mozilla.firefox"]}, "background": {"wallpaperPath": "/w.jpg"}}
+    for k, v in g.CHOICES.items():
+        g.dig(cfg, k, v, put=True)
+    open(f"{d}/home/.config/hypr/hypridle.conf", "w").write(g.chosen_idle(new_idle if fixed else old_idle))
+
+    class P:
+        home = f"{d}/home"
+
+        def config(self):
+            return cfg
+
+        def hypr(self, *a):
+            return {"str": "de" if fixed else "us"}
+    g.Person = P
+    real_run = g.subprocess.run
+
+    def pac(argv, **kw):
+        if argv[:2] == ["pacman", "-Q"]:
+            return subprocess.CompletedProcess(argv, 0, {"tacit": "tacit 1.2.15-1\n", "tacit-session": "tacit-session 0.2.1-59\n"}[argv[2]], "")
+        return real_run(argv, **kw)
+    g.subprocess.run = pac
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            g.step_lived_in_check("1.2.15")
+    except SystemExit:
+        pass
+    finally:
+        g.subprocess.run = real_run
+    return json.loads(buf.getvalue().strip().splitlines()[-1])
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="daily-bench-test.")
     try:
@@ -510,6 +1098,7 @@ def main():
             fake_runs(tmp)
         if "--fake-only" not in sys.argv:
             real_parts(tmp)
+            real_additions(tmp)
         if "--keep" in sys.argv:
             print("kept:", tmp)
     finally:

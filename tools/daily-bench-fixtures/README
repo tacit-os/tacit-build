@@ -1,0 +1,4 @@
+Recorded runs of tools/daily-bench on the real test VM (tools/daily-bench <version> --record tools/daily-bench-fixtures/<name>):
+each folder holds exchanges.jsonl (every exchange with the VM), daily.json and daily.md (what that run judged) and meta.json
+(how it was run). tools/daily-bench-test replays each one and fails when the bench, given those real answers, judges
+differently or asks for something the recording does not have. Until a folder is here, its stand-in answers are assumed.

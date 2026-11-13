@@ -14,7 +14,30 @@ with <version> installed, booted with this checkout's tools/vm (vm disk). It onl
       an update from a test repo through Settings' Restart
   --suite creator|office|developer|gamer|everyday|all: the workflow suites too, one per kind of person who uses Tacit
       (round2/BRIEF-DAILY-BENCH-WORKFLOWS.md); apps they need are got through Apps on the VM
+  --lang de|ru: the run in another language and keyboard, set as Setup sets them (German: de_DE.UTF-8, de; Russian:
+      ru_RU.UTF-8, us,ru switched with Alt+Shift), with the checks that only fail there: Settings' Network page shows
+      an IP, a VPN shows as connected (a WireGuard stand-in made in the VM), the lock takes the password typed with that
+      layout active; the computer is put back to its own language at the end
+  --lived-in [--home <file>]: the VM on the release before <version>, given a lived-in home (that release's settings
+      file with its old defaults, a copied hypridle.conf, the old kb_layout override, pins, a wallpaper, a mirror list
+      of its own), updated through Restart from tools/vm-smoke's test repo, then judged on that home: what an update
+      must get right on a computer in use, then the short run; <file> from the shell's tests/config/releases
+      (lived.json, a file that went through every release; TACIT_SHELL_RELEASES says where they are)
+  --suites-only: the suites without the short run's tasks and measures (with --lang, its checks still run)
+  --repeat N: the same steps N times on the same build, each from the known state: each step's agreement (3 of 3 the
+      same, or unstable); an unstable step is marked so and left out of the comparison until it is the same every time
+  --record <dir>: every exchange with the VM saved in <dir> (exchanges.jsonl, with the run's record and scorecard), for
+      tools/daily-bench-test to replay: a real run's answers become the self-test's
   --report: the scorecard written again from the record, the VM untouched
+
+Every part (the language checks, the app starts, the tasks, the time at rest, each suite, the starts from power on)
+begins from the same saved state of the computer (vm snapshot load daily-base), and the run ends by loading the
+computer as it found it (daily-start). Each check comes out worked, failed, or could not be measured: the VM's
+machinery not answering (tried once more first), a mirror or a site, or the step's own setup; that is never a pass and
+never Tacit's failure.
+
+A failure that is a mirror's, a site's or the network's (an app Apps could not download, YouTube's own changes, a
+check for updates whose mirror did not answer) is reported apart, as outside Tacit, and does not count against it.
 
 The test account's password (for the sign-in, the lock, a sleep's wake and a restart) is read from TACIT_VM_PASSWORD
 here, or ~/tacit-vm/password on the cloud machine; without it those parts are not run, and the scorecard says so.
@@ -22,9 +45,10 @@ TACIT_VM_KEYS=de|gb when the VM types German or British.
 
 Written to out/x86_64/: daily-<version>.json (every number and check), daily-<version>.md (the scorecard, with the
 comparison against the release before); a second run of the same version is daily-<version>.2.*, and pairs of runs
-of one version measure the spread the margins start from. --soak writes daily-<version>-soak.*.
+of one version measure the spread the margins start from. --soak writes daily-<version>-soak.*, --lived-in and --lang
+add -lived-in and -<lang>; each is compared only with runs of its own kind.
 """
-import json, os, re, shutil, subprocess, sys, tarfile, tempfile, time
+import hashlib, json, os, re, shutil, socket, subprocess, sys, tarfile, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT, ZONE, MACHINE = "YOUR-PROJECT", "europe-west4-a", "cef-build-x64"
@@ -43,7 +67,20 @@ TASKS = {
     "search": "Search finds an app and starts it",
     "notch": "The notch opens and closes, with Esc and with a click outside",
     "praxis": "Praxis opens a session",
+    "lang-network": "Settings' Network page shows an IP, in the run's language",
+    "lang-vpn": "A VPN shows as connected, in the run's language (a WireGuard stand-in made in the VM)",
+    "lang-lock": "The lock takes the password typed with the run's layout active",
 }
+# the other languages a run can take: as Setup sets them (scripts/setup/tacit-install); "keys" is how tools/vm types for
+# that layout, "second" whether its own letters are the second layout, reached with Alt+Shift (Setup puts US first)
+LANGS = {"de": {"words": "German", "locale": "de_DE.UTF-8", "layout": "de", "keys": "de", "second": False},
+         "ru": {"words": "Russian", "locale": "ru_RU.UTF-8", "layout": "us,ru", "keys": "", "second": True}}
+# the local video (a moving test pattern with a 440 Hz tone), made with ffmpeg once and served from the cloud machine
+MEDIA = {"tacit-daily-vp9.webm": ["-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8", "-row-mt", "1",
+                                  "-b:v", "1500k", "-g", "60"],
+         "tacit-daily-h264.mp4": ["-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-g", "60", "-pix_fmt", "yuv420p",
+                                  "-movflags", "+faststart"]}
+TONE = ["-af", "volume=4"]      # ffmpeg's sine source is at 1/8 of full scale: at half, plainly heard
 APP_WORDS = {"settings": "Settings", "files": "Files", "thyris": "Thyris", "praxis": "Praxis", "graphis": "Graphis",
              "viewer": "Viewer", "shell": "The shell", "hyprland": "Hyprland", "agent-host": "Praxis's agent host"}
 HARDWARE_ONLY = ["Wi-Fi", "the touchpad (gestures, a pinch)", "the camera", "the microphone heard", "real sleep (a lid)",
@@ -55,7 +92,9 @@ SUITES = {
     "creator": ("Can a streamer use it?", [
         ("obs-install", "VM-network", True, "OBS Studio got from Apps", None),
         ("record-unfocused", "VM", True, "OBS records a window while another has the focus, as bright as in focus", "obs-install"),
-        ("youtube", "VM-network", False, "a 10-minute YouTube video plays, with sound, few frames dropped", None),
+        ("video-vp9", "VM", True, "10 minutes of a VP9 video play in Thyris, with sound, few frames dropped", None),
+        ("video-h264", "VM", False, "10 minutes of an H.264 video play in Thyris, with sound, few frames dropped", None),
+        ("youtube", "VM-network", False, "a 10-minute YouTube video plays (YouTube's own changes are not Tacit's)", None),
         ("upload", "VM", False, "a file sent through a web page's file picker", None),
         ("download", "VM", False, "a file downloaded from a web page", None),
         ("find-audio", "VM", True, "a downloaded voice note found by part of its name in search, and played", None),
@@ -103,6 +142,7 @@ SUITES = {
         ("update-restart", "VM", True, "an update, then Restart", None),
         ("sleep-video", "VM", True, "a sleep with a video paused, then the wake: still paused, plays again", None),
         ("messaging", "ACCOUNT", False, "WhatsApp Web and Discord: signed in, a message's notification arrives", None),
+        ("vpn-provider", "ACCOUNT", False, "a VPN of a provider (OpenVPN, or WireGuard with a server) connects and shows connected", None),
         ("wifi", "HARDWARE", False, "Wi-Fi: a network joined, and kept after a sleep", None),
         ("bt-audio", "HARDWARE", False, "Bluetooth headphones: paired, sound plays", None),
     ]),
@@ -129,44 +169,128 @@ def stats(v):
 
 # ---------------------------------------------------------------- the run, on the cloud machine
 
+class Unmeasured(Exception):
+    """the run could not measure: the VM, QEMU or its agent did not answer, twice; never a pass, never Tacit's failure"""
+
+
+# guest steps not tried a second time when the agent gave no answer: each may have done its part already (the computer
+# asleep, a package installed, the home changed), and a second go would measure something else
+NO_RETRY = {"suspend", "probe-repo", "update-arm", "lived-in-home", "lang-set", "apps-install", "sampler"}
+
+
+def outcome(r):
+    """worked, failed, or unmeasured: what a mirror, a site or the network failed is unmeasured, not Tacit's"""
+    if r.get("outside"):
+        return "unmeasured"
+    o = r.get("outcome")
+    return o if o in ("worked", "failed", "unmeasured") else ("worked" if r.get("ok") else "failed")
+
+
 class Bench:
-    def __init__(self, version, soak, runs, suites):
+    def __init__(self, version, soak, runs, suites, lang=None, lived_in=None, day="", suites_only=False, repeat=1,
+                 record=False):
         self.vmcmd = os.path.expanduser("~/tacit-vm/vm")
+        self.lang, self.lived_in, self.day, self.suites_only = lang, lived_in, day, suites_only
+        self.base, self.server = None, None
         pw = os.path.expanduser("~/tacit-vm/password")
         self.pw = open(pw).read().rstrip("\n") if os.path.exists(pw) else ""
         keys = os.environ.get("TACIT_VM_KEYS", "")
-        self.typeflag = [f"--{keys}"] if keys in ("de", "gb") else []
+        self.typeflag = [f"--{keys}"] if keys in ("de", "gb") else []     # until the VM says which layout it has
         self.t0 = time.time()
         self.n = 0
-        self.rec = {"bench": "tacit-daily", "format": 1, "version": version, "mode": "soak" if soak else "short",
-                    "soak_s": soak, "runs": runs, "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        self.rep, self.repeat, self.part = 0, max(1, repeat), "preflight"
+        self.fresh_base, self.isolation_why, self.start_saved = False, "not tried", False
+        self.recording = None
+        if record:
+            os.makedirs(os.path.join(HERE, "record"), exist_ok=True)
+            self.recording = open(os.path.join(HERE, "record", "exchanges.jsonl"), "a")
+        self.rec = {"bench": "tacit-daily", "format": 2, "version": version, "mode": "soak" if soak else "short",
+                    "soak_s": soak, "runs": runs, "repeat": self.repeat, "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                     "provisional": True, "kvm": os.path.exists("/dev/kvm"), "metrics": {}, "tasks": {},
-                    "suites": {}, "reliability": {}, "not_run": [], "hardware_only": HARDWARE_ONLY}
+                    "suites": {}, "reliability": {}, "not_run": [], "hardware_only": HARDWARE_ONLY,
+                    "variant": variant(lang, lived_in, soak), "lang_run": lang, "parts": [], "infra": [],
+                    "retries": [], "isolated": False}
         self.suites = suites
 
-    # -- the VM
+    # -- the VM: a fault of the machinery (QEMU, QMP, the agent) tried once more, then could-not-measure
     def vm(self, *args, timeout=60):
+        t = time.time()
         try:
             p = subprocess.run([self.vmcmd, *map(str, args)], capture_output=True, text=True, timeout=timeout)
-            return p.returncode, p.stdout, p.stderr
+            code, o, e = p.returncode, p.stdout, p.stderr
         except subprocess.TimeoutExpired:
-            return 124, "", "timed out"
+            code, o, e = 124, "", f"tools/vm {args[0]}: no answer in {timeout} s"
+        if self.recording:      # --record: every exchange with the VM, for tools/daily-bench-test to replay
+            self.recording.write(json.dumps({"argv": [str(a) for a in args], "code": code, "out": o, "err": e,
+                                             "s": round(time.time() - t, 2), "part": self.part, "repeat": self.rep}) + "\n")
+            self.recording.flush()
+        return code, o, e
+
+    def act(self, *args, timeout=60):
+        """a tools/vm command the step needs done (a key, a click, a wake): a failure tried once more, then Unmeasured"""
+        code, o, e = self.vm(*args, timeout=timeout)
+        if code:
+            self.rec["infra"].append({"what": " ".join(map(str, args[:2])), "why": (o + e).strip()[-200:], "part": self.part})
+            code, o, e = self.vm(*args, timeout=timeout)
+            if code:
+                raise Unmeasured(f"could not measure: tools/vm {args[0]} failed twice ({(o + e).strip()[-160:]})")
+        return o
+
+    def until(self, cond, timeout, every=1.0):
+        """cond() asked every `every` s until it gives something true, for at most `timeout` s: that value, or the last
+        falsy one. The run's one wait for "until"; every other wait is a measurement and says so"""
+        end = time.time() + timeout
+        while True:
+            v = cond()
+            if v or time.time() >= end:
+                return v
+            time.sleep(min(every, max(0.0, end - time.time())))
 
     def guest(self, *args, timeout=120):
-        code, o, e = self.vm("run", "--timeout", timeout, "--", "/usr/bin/python3", "-I", GUEST, *args, timeout=timeout + 60)
-        for line in reversed(o.splitlines()):
-            if line.startswith("{"):
-                try:
-                    return json.loads(line)
-                except ValueError:
-                    break
-        return {"ok": False, "why": f"no answer from the test computer: {(o + e).strip()[-300:] or code}"}
+        """one step in the guest: its answer, with its outcome; no answer at all (the agent, QEMU) is tried once more,
+        but for a step that may have done its part already, then could-not-measure"""
+        whys = []
+        for attempt in (1, 2):
+            code, o, e = self.vm("run", "--timeout", timeout, "--", "/usr/bin/python3", "-I", GUEST, *args, timeout=timeout + 60)
+            for line in reversed(o.splitlines()):
+                if line.startswith("{"):
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        break
+                    r["outcome"] = outcome(r)
+                    if whys:
+                        r["after_retry"] = whys[0]
+                    return r
+            whys.append((o + e).strip()[-240:] or f"exit {code}")
+            self.rec["infra"].append({"what": f"guest {args[0]}", "why": whys[-1], "part": self.part, "attempt": attempt})
+            if args[0] in NO_RETRY:
+                break
+        return {"ok": False, "outcome": "unmeasured",
+                "why": f"could not measure: no answer from the test computer to {args[0]} ({'; '.join(whys)[:300]})"}
+
+    def need(self, r, what):
+        """a step's own setup: unless it worked, the step cannot be measured"""
+        if outcome(r) != "worked":
+            raise Unmeasured(f"could not measure: {what}: {r.get('why')}")
+        return r
 
     def key(self, *names):
-        self.vm("key", *names)
+        self.act("key", *names)
 
     def type(self, text):
-        self.vm("type", *self.typeflag, text)
+        self.act("type", *self.typeflag, text)
+
+    def wait(self, kind, arg="", timeout=10):
+        """what the run waits for between its keys (a surface, a window, the screen settled), instead of a pause"""
+        return self.guest("await", kind, arg, timeout, timeout=timeout + 30)
+
+    def relayout(self):
+        """type for the layout Hyprland has now (its first: the one active at a sign-in and after a switch back), as a
+        person does: a German computer types German, and one an old override left on US types US"""
+        first = str(self.guest("lang-state").get("layout") or "").split(",")[0]
+        if first:
+            self.typeflag = [f"--{first}"] if first in ("de", "gb") else []
 
     def log(self, *a):
         print(f"[{(time.time() - self.t0) / 60:5.1f} min]", *a, flush=True)
@@ -180,14 +304,31 @@ class Bench:
         m["at"].append(round((time.time() - self.t0) / 60, 1))
 
     def task(self, name, r):
-        t = self.rec["tasks"].setdefault(name, {"words": TASKS[name], "runs": 0, "passed": 0, "why": []})
+        """a daily task's run: worked, failed, or could not be measured, each counted apart"""
+        t = self.rec["tasks"].setdefault(name, {"words": TASKS[name], "runs": 0, "worked": 0, "failed": 0, "unmeasured": 0,
+                                                 "why": [], "unmeasured_why": [], "outcomes": [], "retries": []})
+        o = outcome(r)
+        why = r.get("why") or ("failed" if o == "failed" else "could not measure")
+        if r.get("outside") and not why.startswith("outside Tacit"):
+            why = f"outside Tacit: {why}"
         t["runs"] += 1
-        if r.get("ok"):
-            t["passed"] += 1
-        else:
-            t["why"].append(r.get("why") or "failed")
-        self.log(f"{name}: {'pass' if r.get('ok') else 'FAIL ' + str(r.get('why'))}")
-        return r.get("ok")
+        t[o] += 1
+        t["outcomes"].append([self.rep, o])
+        if o == "failed":
+            t["why"].append(why)
+        elif o == "unmeasured":
+            t["unmeasured_why"].append(why)
+        if r.get("retried"):
+            t["retries"].append(r["retried"])
+        self.log(f"{name}: {o}" + ("" if o == "worked" else f" ({why})"))
+        return o == "worked"
+
+    def attempt(self, name, fn, *a):
+        """a task, where the machinery failing twice makes it could-not-measure instead of ending the run"""
+        try:
+            return fn(*a)
+        except Unmeasured as e:
+            return self.task(name, {"outcome": "unmeasured", "why": str(e)})
 
     def not_run(self, what, why):
         if not any(x["what"] == what for x in self.rec["not_run"]):
@@ -209,32 +350,238 @@ class Bench:
         self.n += 1
         ident = f"{spec}-{self.n}"
         a = self.guest("arm", spec, ident)
-        if not a.get("ok"):
-            return {"ok": False, "why": f"the key listener did not start: {a.get('why')}"}
+        if outcome(a) != "worked":
+            return dict(a, outcome="unmeasured", why=f"could not measure: the key listener: {a.get('why')}")
         act()
         return self.guest("result", ident, limit, timeout=limit + 30)
+
+    # -- a known state: QEMU's snapshots of the whole running computer
+    def snapshot(self, how, name):
+        """vm snapshot save|load|delete <name>, once more on a fault: (worked, what it said)"""
+        for _ in (1, 2):
+            code, o, e = self.vm("snapshot", how, name, timeout=1200)
+            if code == 0:
+                return True, ""
+            said = (o + e).strip()[-300:]
+            self.rec["infra"].append({"what": f"snapshot {how} {name}", "why": said, "part": self.part})
+            if "does not support snapshots" in said:
+                break
+        return False, said
+
+    def start_isolation(self):
+        """the computer as found saved first (daily-start, loaded again at the end, so the run leaves it as it was);
+        snapshots hold its memory as well as its disk, so the cloud machine's free space is asked first"""
+        used = self.guest("before-snapshot").get("used_mb") or 8192
+        free = shutil.disk_usage(os.path.expanduser("~/tacit-vm")).free // 2**20
+        need = 2 * used + 2048
+        if free < need:
+            self.isolation_why = f"the cloud machine has {free} MB free, and two snapshots need about {need} MB"
+        else:
+            ok, said = self.snapshot("save", "daily-start")
+            if not ok and "does not support snapshots" in said and self.pw:
+                # the UEFI variables are raw, which savevm refuses: made qcow2 once, with the computer off
+                self.log("the UEFI variables made qcow2 for snapshots (once): a restart")
+                self.vm("run", "--timeout", 15, "--", "systemctl", "poweroff", timeout=40)
+                if self.until(lambda: self.vm("status")[0] != 0, 180, every=1) and self.vm("snapshot", "prepare")[0] == 0 \
+                        and self.vm("disk", timeout=120)[0] == 0 and outcome(self.through_boot_lock(time.time(), measure=False)) == "worked":
+                    ok, said = self.snapshot("save", "daily-start")
+            self.start_saved = ok
+            self.isolation_why = None if ok else f"the computer could not be saved: {said}"
+        self.rec["isolated"] = self.isolation_why is None
+        if self.isolation_why:
+            self.not_run("a known state for each part (each starts from where the one before left the computer)", self.isolation_why)
+        self.log(f"snapshots: {'yes' if self.rec['isolated'] else 'no, ' + self.isolation_why}")
+
+    def save_base(self):
+        """the state every part starts from: the run's own setup done (a language, a lived-in update), the desktop
+        ready, the sampler on"""
+        if not self.rec["isolated"]:
+            return
+        self.guest("before-snapshot")
+        ok, said = self.snapshot("save", "daily-base")
+        if ok:
+            self.fresh_base = True
+        else:
+            self.rec["isolated"], self.isolation_why = False, f"the run's base could not be saved: {said}"
+            self.not_run("a known state for each part", self.isolation_why)
+
+    def part_from_base(self, name, fn):
+        """one part of the run from the known state: daily-base loaded (the first part runs straight from its save) and
+        the desktop ready; then the part; then what went wrong in it gathered, before the next load rolls it back"""
+        self.part = name
+        p = {"name": name, "repeat": self.rep}
+        if self.rec["isolated"]:
+            if self.fresh_base:
+                self.fresh_base, p["from"] = False, "daily-base, just saved"
+            else:
+                ok, said = self.snapshot("load", "daily-base")
+                ready = self.guest("ready", timeout=240) if ok else {}
+                if not ok or outcome(ready) != "worked":
+                    p.update(outcome="unmeasured", why=f"could not measure: the known state: {said or ready.get('why')}")
+                    self.rec["parts"].append(p)
+                    self.log(f"part {name}: {p['why']}")
+                    return
+                p["from"] = "daily-base"
+        else:
+            p["from"] = f"where the part before left it ({self.isolation_why})"
+        self.log(f"part {name} (from {p['from']})")
+        try:
+            fn()
+            p["outcome"] = "measured"
+        except Unmeasured as e:
+            p.update(outcome="unmeasured", why=str(e))
+        self.reliability()
+        self.rec["parts"].append(p)
+        self.save()
 
     # -- the parts of a run
     def preflight(self):
         code, o, e = self.vm("agent", timeout=20)
         if code:
+            code, o, e = self.vm("agent", timeout=20)
+        if code:
+            self.rec["error"] = "could not measure: the test computer's guest agent does not answer"
+            self.save()
             sys.exit("daily-bench: the test computer's guest agent does not answer. Once per test disk: start it with this "
                      "checkout's tools/vm (vm disk), sign in, and in a terminal there: sudo pacman -S qemu-guest-agent, then "
                      "sudo systemctl start qemu-guest-agent (tools/vm-smoke says the same).")
         for name in ("daily-bench-guest", "daily-bench-suites", "vm-smoke-guest"):
-            self.vm("run", "--stdin", name, "--", "/bin/sh", "-c", f"mkdir -p /var/tmp/daily && cat > /var/tmp/daily/{name}")
-        p = self.guest("preflight", self.rec["version"])
-        self.rec["tacit"], self.rec["hyprland"] = p.get("tacit"), p.get("hyprland")
-        if not p.get("ok"):
+            self.act("run", "--stdin", name, "--", "/bin/sh", "-c", f"mkdir -p /var/tmp/daily && cat > /var/tmp/daily/{name}")
+        if (self.lang or self.lived_in) and not self.pw:
+            self.rec["error"] = "--lang and --lived-in restart the computer and sign in again: they need the test account's password"
+            self.save()
+            sys.exit(f"daily-bench: {self.rec['error']}")
+        # a lived-in run starts on the release before, and updates to this one
+        p = self.guest("preflight", self.lived_in or self.rec["version"])
+        self.rec["tacit"], self.rec["hyprland"], self.rec["language"] = p.get("tacit"), p.get("hyprland"), p.get("language")
+        if outcome(p) != "worked":
             self.rec["error"] = p.get("why")
             self.save()
             sys.exit(f"daily-bench: {p.get('why')}")
+        self.serve()
+        self.start_isolation()
+        if self.lang:
+            self.set_language()
+        if self.lived_in:
+            self.lived_in_update()
+        self.relayout()
         self.guest("sampler", "start")
-        self.memory0 = self.guest("memory").get("pss", {})
+        self.guest("ready", timeout=240)
         self.rec["disk_start"] = self.guest("disk")
+        self.save_base()
         if not self.pw:
             for what in ("the start and the sign-in", "lock and unlock", "sleep and wake", "the update through Restart"):
                 self.not_run(what, "no password for the test account (TACIT_VM_PASSWORD, or ~/tacit-vm/password on the cloud machine)")
+
+    def serve(self):
+        """the local video and the lived-in run's test repo, served from here to the VM (QEMU's user network takes the
+        guest's 10.0.2.2 to this machine's 127.0.0.1)"""
+        root = os.path.join(HERE, "serve")
+        os.makedirs(root, exist_ok=True)
+        for name, target in (("repo", os.path.join(HERE, "repo")), ("media", os.path.expanduser("~/tacit-vm/media"))):
+            if os.path.isdir(target) and not os.path.exists(os.path.join(root, name)):
+                os.symlink(target, os.path.join(root, name))
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        self.server = subprocess.Popen([sys.executable, "-m", "http.server", str(port), "--bind", "127.0.0.1", "--directory", root],
+                                       stdout=open(os.path.join(HERE, "http.log"), "w"), stderr=subprocess.STDOUT)
+        self.base = f"http://10.0.2.2:{port}"
+
+    def down(self):
+        """the computer gone down for a restart: its agent no longer answering, for at most 4 minutes"""
+        if not self.until(lambda: self.vm("agent", timeout=10)[0] != 0, 240, every=2):
+            raise Unmeasured("could not measure: did not happen in 240 s: the computer going down for the restart")
+
+    def reboot(self):
+        """a restart and the sign-in through the boot lock"""
+        self.vm("run", "--timeout", 10, "--", "systemctl", "reboot", timeout=40)
+        self.down()
+        return self.through_boot_lock(time.time(), measure=False)
+
+    def set_language(self):
+        L = LANGS[self.lang]
+        r = self.guest("lang-set", L["locale"], L["layout"], timeout=300)
+        if outcome(r) != "worked":
+            self.rec["error"] = f"the language could not be set: {r.get('why')}"
+            self.finish()
+            sys.exit(f"daily-bench: {self.rec['error']}")
+        u = self.reboot()
+        st = self.guest("lang-state")
+        self.rec["language"] = {k: st.get(k) for k in ("lang", "layout", "active")}
+        self.rec["language"]["set"] = f"{L['words']} ({L['locale']}, keyboard {L['layout']})"
+        if outcome(u) != "worked":
+            self.rec["error"] = f"no sign-in after setting {L['words']}: {u.get('why')}"
+            self.finish()
+            sys.exit(f"daily-bench: {self.rec['error']}")
+        self.log(f"language: {self.rec['language']}")
+
+    def language_checks(self):
+        """what breaks only in another language: the Network page's IP, a VPN's state, the lock with the layout active"""
+        self.task("lang-network", self.guest("lang-network", timeout=120))
+        self.task("lang-vpn", self.guest("lang-vpn", timeout=150))
+        L, why, retried = LANGS[self.lang], [], None
+        if L["second"]:
+            self.key("alt", "shift")            # the person was typing in their own letters (Setup's Alt+Shift)
+            if outcome(self.wait("keymap", L["words"], 5)) != "worked":
+                why.append(f"Alt+Shift did not switch to {L['words']} (the keyboard is {self.guest('lang-state').get('active')})")
+        r = self.press("lock", lambda: self.key("meta_l", "l"))
+        if outcome(r) == "unmeasured":
+            raise Unmeasured(r.get("why"))
+        if outcome(r) != "worked":
+            why.append(f"Super+L did not lock with {L['words']} active ({r.get('why')})")
+            self.need(self.guest("lock-now"), "locking through the shell instead")
+        u = self.unlock()
+        if outcome(u) == "failed":
+            why.append(f"the password typed with {L['words']} active did not unlock it")
+            self.key("alt", "shift")            # to the Latin layout, as a person would try next, so the run goes on
+            u2 = self.unlock()
+            retried = {"first": why[-1], "second": "unlocked with the Latin layout" if outcome(u2) == "worked" else u2.get("why")}
+            u = u2
+        if L["second"] and L["words"].lower()[:4] in str(self.guest("lang-state").get("active", "")).lower():
+            self.key("alt", "shift")            # back to the first layout for the rest of the run
+        self.settle("lang-lock")
+        self.task("lang-lock", {"ok": not why, "why": "; ".join(why) or None, "retried": retried,
+                                "outcome": "unmeasured" if outcome(u) == "unmeasured" and not why else None})
+        if outcome(u) != "worked" and not self.rec["isolated"]:
+            self.rec["error"] = "the computer stayed locked after the language's lock check"
+            self.finish()
+            sys.exit(f"daily-bench: {self.rec['error']}")
+
+    def lived_in_update(self):
+        """the release before, with a lived-in home, updated through Restart from tools/vm-smoke's test repo (its own
+        guest steps: the repo in pacman.conf, the download and the install armed as Settings runs them), then judged on
+        that home after the restart"""
+        self.act("run", "--stdin", "home.json", "--", "/bin/sh", "-c", "cat > /var/tmp/daily/home.json")
+        h = self.guest("lived-in-home", "/var/tmp/daily/home.json", self.day, timeout=120)
+        self.rec["lived_in"] = {"from": self.lived_in, "home": h.get("settings"), "made": h}
+        # the release before reads the home as it starts, and runs on it: its settings file left alone by it for 3 s
+        self.guest("ready", "", timeout=240)
+        self.relayout()
+        code, o, e = self.vm("run", "--timeout", 1800, "--", "/bin/bash", "/var/tmp/daily/vm-smoke-guest", "update",
+                             f"{self.base}/repo", timeout=1900)
+        if "armed" not in o.splitlines():
+            self.rec["lived_in"]["checks"] = {"updated": [False, f"the update was not armed: {(o + e).strip()[-200:]}"]}
+            self.vm("run", "--", "/bin/bash", "/var/tmp/daily/vm-smoke-guest", "restore-pacman")
+            self.rec["error"] = "the lived-in update did not start"
+            self.finish()
+            sys.exit(f"daily-bench: {self.rec['error']}")
+        u = self.reboot()
+        self.vm("run", "--", "/bin/bash", "/var/tmp/daily/vm-smoke-guest", "restore-pacman")
+        self.guest("ready", timeout=240)            # the shell and its migration settled
+        c = self.guest("lived-in-check", self.rec["version"], timeout=120)
+        self.rec["lived_in"]["checks"] = c.get("checks") or {"updated": [None if outcome(c) == "unmeasured" else False,
+                                                                         c.get("why") or "no answer"]}
+        if outcome(u) != "worked":
+            self.rec["lived_in"]["checks"]["signed in"] = [False if outcome(u) == "failed" else None,
+                                                           f"after the update's restart: {u.get('why')}"]
+        p = self.guest("preflight", self.rec["version"])
+        self.rec["tacit"] = p.get("tacit")
+        if outcome(p) != "worked":
+            self.rec["error"] = f"after the update: {p.get('why')}"
+            self.finish()
+            sys.exit(f"daily-bench: {self.rec['error']}")
 
     def app_starts(self, rounds):
         for app in ("settings", "files", "thyris", "praxis", "graphis", "viewer"):
@@ -242,7 +589,7 @@ class Bench:
                 for kind in ("cold", "warm"):
                     r = self.guest("start", app, kind, timeout=120)
                     self.metric(f"start.{app}.{kind}", "speed", "ms", f"{APP_WORDS[app]}, {kind} start", r.get("answers_ms"))
-                    if not r.get("ok"):
+                    if outcome(r) == "failed":
                         self.rec["reliability"].setdefault("start_failures", []).append(f"{app} ({kind}): {r.get('why')}")
             self.guest("quit", app)
             self.settle(f"{app}'s starts")
@@ -252,7 +599,7 @@ class Bench:
         for row in r.get("runs") or []:
             for k, words in (("load", "a page load in Thyris, to its load event"), ("fcp", "a page load in Thyris, to its first paint")):
                 self.metric(f"page.{k}", "speed", "ms", words, row.get(k) or None)
-        if not r.get("ok"):
+        if outcome(r) == "failed":
             self.rec["reliability"].setdefault("start_failures", []).append(f"page load: {r.get('why')}")
         self.guest("quit", "thyris")
 
@@ -260,26 +607,28 @@ class Bench:
         self.guest("quit", "graphis")
         r = self.press("search", lambda: self.key("meta_l"))
         self.metric("search.shown", "speed", "ms", "Search, from the key to shown", r.get("ms"))
-        if not r.get("ok"):
+        if outcome(r) != "worked":
             self.key("esc")
-            return self.task("search", {"ok": False, "why": f"search did not show: {r.get('why')}"})
-        time.sleep(0.5)
+            return self.task("search", dict(r, why=f"search did not show: {r.get('why')}"))
+        self.need(self.wait("settled", "", 10), "the dock shown and still")
         self.type("graphis")
-        time.sleep(1)
+        self.need(self.wait("settled", "", 10), "the search's results drawn")
         self.key("ret")
         up = self.guest("up", "graphis", 30, timeout=60)
         self.guest("quit", "graphis")
         self.settle("search")
-        return self.task("search", up if up.get("ok") else {"ok": False, "why": f"Enter on \"graphis\" in search: {up.get('why')}"})
+        return self.task("search", up if outcome(up) == "worked" else dict(up, why=f"Enter on \"graphis\" in search: {up.get('why')}"))
 
     def notch(self):
         why = []
         for spec, act in (("notch-open", lambda: self.key("meta_l", "spc")), ("notch-esc", lambda: self.key("esc")),
-                          ("notch-open", lambda: self.key("meta_l", "spc")), ("notch-click", lambda: self.vm("click", 960, 900))):
+                          ("notch-open", lambda: self.key("meta_l", "spc")), ("notch-click", lambda: self.act("click", 960, 900))):
             r = self.press(spec, act)
+            if outcome(r) == "unmeasured":
+                raise Unmeasured(r.get("why"))
             if spec == "notch-open":
                 self.metric("notch.shown", "speed", "ms", "The notch, from the key to shown", r.get("ms"))
-            if not r.get("ok"):
+            if outcome(r) != "worked":
                 why.append(f"{spec}: {r.get('why')}")
                 if spec == "notch-open":
                     break
@@ -288,94 +637,94 @@ class Bench:
         return self.task("notch", {"ok": not why, "why": "; ".join(why)})
 
     def unlock(self):
-        """the password typed into the lock and Enter: unlocked, the shell answering"""
+        """the password typed into the lock and Enter: unlocked, the shell answering. Typing into the VM can drop a key, so
+        a failed unlock is tried once more, and both results are kept (never a silent second chance)"""
         r = self.press("enter-unlocked", lambda: (self.type(self.pw), self.key("ret")), 40)
-        if not r.get("ok"):      # typing into the VM can drop a key: once more
+        if outcome(r) == "failed":
             self.key("esc")
-            r = self.press("enter-unlocked", lambda: (self.type(self.pw), self.key("ret")), 40)
+            r2 = self.press("enter-unlocked", lambda: (self.type(self.pw), self.key("ret")), 40)
+            r2["retried"] = {"first": r.get("why"), "second": "worked" if outcome(r2) == "worked" else r2.get("why")}
+            self.rec["retries"].append({"what": "unlock", "part": self.part, **r2["retried"]})
+            return r2
         return r
 
     def lock(self):
         r = self.press("lock", lambda: self.key("meta_l", "l"))
-        if not r.get("ok"):
-            return self.task("lock", {"ok": False, "why": f"Super+L did not lock: {r.get('why')}"})
+        if outcome(r) != "worked":
+            return self.task("lock", dict(r, why=f"Super+L did not lock: {r.get('why')}"))
         u = self.unlock()
         self.metric("unlock", "speed", "ms", "Unlock, from Enter to the desktop answering", u.get("ms"))
         self.settle("lock")
-        return self.task("lock", u if u.get("ok") else {"ok": False, "why": f"the password did not unlock it: {u.get('why')}"})
+        return self.task("lock", u if outcome(u) == "worked" else dict(u, why=f"the password did not unlock it: {u.get('why')}"))
 
     def sleep_wake(self, task="sleep", measure=True):
         """systemctl suspend; QEMU says it sleeps; QMP's system_wakeup; the desktop answers again, through the lock"""
         self.guest("suspend")
-        asleep = False
-        for _ in range(60):
-            time.sleep(1)
-            if self.vm("status")[1].strip() == "suspended":
-                asleep = True
-                break
-        if not asleep:
-            r = {"ok": False, "why": "the VM never went to sleep (QEMU did not say suspended)"}
+        if not self.until(lambda: self.vm("status")[1].strip() == "suspended", 60, every=1):
+            r = {"ok": False, "why": "did not happen in 60 s: QEMU saying the computer sleeps, after systemctl suspend"}
             return self.task(task, r) if task in TASKS else r
-        time.sleep(5)
+        time.sleep(5)       # asleep for 5 s: what is done (a lid shut a moment), not a wait for something
         t = time.time()
-        self.vm("wake")
-        while time.time() < t + 120 and self.vm("agent", timeout=10)[0]:
-            time.sleep(0.5)
+        self.act("wake")
+        if not self.until(lambda: self.vm("agent", timeout=10)[0] == 0, 120, every=0.5):
+            r = {"ok": False, "why": "did not happen in 120 s: the system answering after the wake"}
+            return self.task(task, r) if task in TASKS else r
         if measure:
             self.metric("wake.agent", "speed", "s", "Wake, until the system answers", time.time() - t)
         d = self.guest("desktop")
         if d.get("locked"):
             u = self.unlock()
-            d = self.guest("desktop") if u.get("ok") else {"ok": False, "why": f"after the wake the password did not unlock it: {u.get('why')}"}
+            d = self.guest("desktop") if outcome(u) == "worked" else dict(u, why=f"after the wake the password did not unlock it: {u.get('why')}")
         if measure:
-            self.metric("wake.desktop", "speed", "s", "Wake, until the desktop answers (through the lock)", time.time() - t if d.get("ok") else None)
-        r = d if d.get("ok") else {"ok": False, "why": f"after the wake: {d.get('why')}"}
+            self.metric("wake.desktop", "speed", "s", "Wake, until the desktop answers (through the lock)",
+                        time.time() - t if outcome(d) == "worked" else None)
+        r = d if outcome(d) == "worked" else dict(d, why=f"after the wake: {d.get('why')}")
         self.settle("sleep")
         return self.task(task, r) if task in TASKS else r
 
     def boot(self):
         """off, power on (vm disk), to the sign-in screen and through it to a desktop that answers"""
         self.vm("run", "--timeout", 15, "--", "systemctl", "poweroff", timeout=40)
-        off = False
-        for _ in range(120):
-            time.sleep(1)
-            if self.vm("status")[0]:
-                off = True
-                break
-        if not off:
+        if not self.until(lambda: self.vm("status")[0] != 0, 120, every=1):
             self.rec["reliability"].setdefault("stuck", []).append("the VM did not power off within 2 minutes: switched off")
-            self.vm("stop")
-            time.sleep(3)
+            self.act("stop")
+            if not self.until(lambda: self.vm("status")[0] != 0, 30, every=0.5):
+                raise Unmeasured("could not measure: did not happen in 30 s: QEMU gone after vm stop")
         t0 = time.time()
-        if self.vm("disk", timeout=120)[0]:
-            sys.exit("daily-bench: the VM did not start again (vm disk)")
+        self.act("disk", timeout=120)
         return self.through_boot_lock(t0)
 
     def through_boot_lock(self, t0, measure=True):
         """from the power on (t0) to the sign-in screen, the password typed, to a desktop that answers; measured only for
         a power on (a restart's t0 is when the system went down, not when the firmware started)"""
-        pre = None
-        while time.time() < t0 + 600:
+        seen = {"pre": None, "st": {}}
+
+        def sign_in_shown():
             t = time.time()
-            if not self.vm("agent", timeout=10)[0]:
-                st = self.guest("boot-state")
-                if "uptime" in st:
-                    if pre is None:
-                        pre = t - t0 - st["uptime"]     # firmware and boot loader: before the kernel's clock starts
-                    if st.get("bootlock") and st["bootlock"].get("at") is not None:
-                        break
-            time.sleep(1)
-        else:
-            return {"ok": False, "why": "no sign-in screen within 10 minutes of the power on"}
+            if self.vm("agent", timeout=10)[0]:
+                return False
+            st = self.guest("boot-state")
+            if "uptime" in st:
+                if seen["pre"] is None:
+                    seen["pre"] = t - t0 - st["uptime"]     # firmware and boot loader: before the kernel's clock starts
+                seen["st"] = st
+                return bool(st.get("bootlock") and st["bootlock"].get("at") is not None)
+            return False
+        if not self.until(sign_in_shown, 600, every=1):
+            return {"ok": False, "why": "did not happen in 600 s: the sign-in screen, after the power on"}
         if measure:
-            self.metric("boot.sign_in", "speed", "s", "Power on to the sign-in screen", pre + st["bootlock"]["at"])
+            self.metric("boot.sign_in", "speed", "s", "Power on to the sign-in screen", seen["pre"] + seen["st"]["bootlock"]["at"])
+        self.relayout()
         u = self.press("enter-usable", lambda: (self.type(self.pw), self.key("ret")), 120)
-        if not u.get("ok"):
+        if outcome(u) == "failed":      # a dropped key while typing: once more, both kept
             self.key("esc")
-            u = self.press("enter-usable", lambda: (self.type(self.pw), self.key("ret")), 120)
+            u2 = self.press("enter-usable", lambda: (self.type(self.pw), self.key("ret")), 120)
+            self.rec["retries"].append({"what": "sign-in", "part": self.part, "first": u.get("why"),
+                                        "second": "worked" if outcome(u2) == "worked" else u2.get("why")})
+            u = u2
         if measure:
             self.metric("boot.desktop", "speed", "ms", "Sign-in to a desktop that answers", u.get("ms"))
-        self.guest("wait", 20)
+        self.guest("ready", timeout=240)
         self.guest("sampler", "start")
         if self.suites:
             self.guest("serve", "start")
@@ -385,46 +734,58 @@ class Bench:
         """the soak's update: a new version of a probe package in a test repo, got as Settings gets it, installed at
         the restart Restart asks for, through the boot lock"""
         r = self.guest("probe-repo", n, timeout=300)
-        if r.get("ok"):
+        if outcome(r) == "worked":
             r = self.guest("update-arm", timeout=1800)
-        if r.get("ok"):
-            self.vm("run", "--timeout", 10, "--", "systemctl", "reboot", timeout=40)
-            for _ in range(120):
-                if self.vm("agent", timeout=10)[0]:
-                    break
-                time.sleep(2)
-            r = self.through_boot_lock(time.time(), measure=False)
-            if r.get("ok"):
+        if outcome(r) == "worked":
+            r = self.reboot()
+            if outcome(r) == "worked":
                 r = self.guest("update-done", n)
         self.guest("probe-clean", timeout=300)
         return self.task(task, r) if task in TASKS else r
 
     def round(self, i):
-        self.task("sound", self.guest("sound", timeout=180))
-        r = self.guest("wallpaper", timeout=120)
-        self.metric("wallpaper.shown", "speed", "ms", "A wallpaper change, until the desktop shows it", r.get("shown_ms"))
-        self.task("wallpaper", r)
-        self.settle("wallpaper")
-        r = self.guest("files-preview", timeout=120)
-        self.task("files-preview", r)
-        self.settle("files-preview")
-        self.search()
-        self.notch()
-        r = self.guest("praxis", timeout=120)
-        self.metric("praxis.list", "speed", "ms", "Praxis, from its start to its session list", r.get("list_ms"))
-        self.task("praxis", r)
-        self.guest("quit", "praxis")
-        self.settle("praxis")
-        r = self.guest("update-check", timeout=1000)
-        self.metric("update.check", "speed", "s", "A check for updates", r.get("seconds"))
-        self.task("update-check", r)
+        self.attempt("sound", lambda: self.task("sound", self.guest("sound", timeout=180)))
+
+        def wallpaper():
+            r = self.guest("wallpaper", timeout=120)
+            self.metric("wallpaper.shown", "speed", "ms", "A wallpaper change, until the desktop shows it", r.get("shown_ms"))
+            self.task("wallpaper", r)
+            self.settle("wallpaper")
+        self.attempt("wallpaper", wallpaper)
+        self.attempt("files-preview", lambda: (self.task("files-preview", self.guest("files-preview", timeout=120)),
+                                               self.settle("files-preview")))
+        self.attempt("search", self.search)
+        self.attempt("notch", self.notch)
+
+        def praxis():
+            r = self.guest("praxis", timeout=120)
+            self.metric("praxis.list", "speed", "ms", "Praxis, from its start to its session list", r.get("list_ms"))
+            self.task("praxis", r)
+            self.guest("quit", "praxis")
+            self.settle("praxis")
+        self.attempt("praxis", praxis)
+
+        def check():
+            r = self.guest("update-check", timeout=1000)
+            self.metric("update.check", "speed", "s", "A check for updates", r.get("seconds"))
+            self.task("update-check", r)
+        self.attempt("update-check", check)
         if self.pw:
-            self.lock()
-            self.sleep_wake()
+            self.attempt("lock", self.lock)
+            self.attempt("sleep", self.sleep_wake)
+
+    def rounds(self, runs):
+        """the daily tasks, `runs` times over, and the memory the long-lived processes took on doing them"""
+        before = self.guest("memory").get("pss", {})
+        for i in range(runs):
+            self.log(f"tasks, round {i + 1} of {runs}")
+            self.round(i)
+            self.save()
+        self.growth(before, self.guest("memory").get("pss", {}))
 
     def idle(self, total=600, windows=5, window=60, samples=3):
         o = self.guest("open-all", timeout=400)
-        if not o.get("ok"):
+        if outcome(o) != "worked":
             self.rec["reliability"].setdefault("start_failures", []).append(f"before the rest: {o.get('why')}")
         r = self.guest("idle", total, windows, window, samples, timeout=total + 200)
         for k, v in (r.get("pss") or {}).items():
@@ -439,6 +800,7 @@ class Bench:
         for x in r.get("system_cpu") or []:
             self.metric("cpu.all", "lightness", "%", "Everything: processor at rest", x)
         self.guest("close-all", timeout=200)
+        self.disk()
 
     def growth(self, before, after, hours=None):
         for k, b in before.items():
@@ -447,7 +809,7 @@ class Bench:
                 if hours:
                     self.metric(f"growth.{k}", "lightness", "MB/h", f"{APP_WORDS.get(k, k)}: memory growth an hour", (a["mb"] - b["mb"]) / hours)
                 else:
-                    self.metric(f"growth.{k}", "lightness", "MB", f"{APP_WORDS.get(k, k)}: memory growth over the run", a["mb"] - b["mb"])
+                    self.metric(f"growth.{k}", "lightness", "MB", f"{APP_WORDS.get(k, k)}: memory growth over the tasks", a["mb"] - b["mb"])
 
     def reliability(self):
         r = self.guest("reliability", timeout=300)
@@ -465,48 +827,69 @@ class Bench:
             self.metric(f"disk.{k}", "lightness", "MB", f"Disk: {k}", v)
         self.rec["disk_end"] = d
 
+    def boots(self, runs):
+        for i in range(runs):
+            self.log(f"start {i + 1} of {runs}")
+            self.boot()
+            self.save()
+
     # -- the workflow suites
     def install(self, app):
         r = self.guest("apps-install", app)
-        typed, end = 0, time.time() + 2400
-        while r.get("ok") is not False and time.time() < end:
-            time.sleep(5)
-            r = self.guest("apps-wait", app)
-            if r.get("done"):
-                return r
-            if r.get("password") and typed < 2:
+        if outcome(r) != "worked":
+            return r
+        typed = [0]
+
+        def finished():
+            w = self.guest("apps-wait", app)
+            if w.get("done") or outcome(w) == "unmeasured":
+                return w
+            if w.get("password") and typed[0] < 2:
                 if not self.pw:
-                    return {"ok": False, "why": "Apps asks for the password (pacman), and the run has none"}
+                    return {"ok": False, "outcome": "unmeasured", "why": "Apps asks for the password (pacman), and the run has none"}
                 self.type(self.pw)
                 self.key("ret")
-                typed += 1
-        return {"ok": False, "why": r.get("why") or "Apps did not finish within 40 minutes"}
+                typed[0] += 1
+            return None
+        w = self.until(finished, 2400, every=5)
+        return w or {"ok": False, "why": "did not happen in 2400 s: Apps finishing the install"}   # its "outside" says whether a mirror failed
 
     def suite(self, name):
         title, steps = SUITES[name]
         rec = self.rec["suites"].setdefault(name, {"title": title, "steps": {}})
-        self.guest("serve", "start")
+        self.need(self.guest("serve", "start"), "the local pages served")
+        now_ = {}
         for sid, mark, core, words, needs in steps:
-            s = {"mark": mark, "core": core, "words": words}
-            rec["steps"][sid] = s
+            s = rec["steps"].setdefault(sid, {"mark": mark, "core": core, "words": words, "outcomes": []})
             if mark in ("ACCOUNT", "HARDWARE"):
-                s["status"] = "needs a tester"
+                s["status"] = now_[sid] = "needs a tester"
                 continue
-            if needs and rec["steps"].get(needs, {}).get("status") != "passed":
-                s.update(status="not run", why=f"needs \"{rec['steps'][needs]['words']}\" first")
+            if needs and now_.get(needs) != "worked":
+                was = now_.get(needs)
+                s.update(status="not run", why=f"needs \"{rec['steps'][needs]['words']}\" first"
+                         + (", which could not be measured" if was == "unmeasured" else ""))
+                now_[sid] = "not run"
                 continue
             if sid in PASSWORD_STEPS and not self.pw:
                 s.update(status="not run", why="no password for the test account")
+                now_[sid] = "not run"
                 continue
+            self.part = f"suite {name}: {sid}"
             try:
                 r = getattr(self, "s_" + name + "_" + sid.replace("-", "_"))()
-            except Exception as e:          # one step's surprise must not end the run: it is that step's failure
-                r = {"ok": False, "why": f"the run's own error: {e!r}"}
-            s["status"] = "passed" if r.get("ok") else "failed"
-            if not r.get("ok"):
-                s["why"] = r.get("why") or "failed"
-            s["detail"] = {k: v for k, v in r.items() if k not in ("ok", "why")}
-            self.log(f"{name}.{sid}: {s['status']} {s.get('why') or ''}")
+            except Unmeasured as e:
+                r = {"ok": False, "outcome": "unmeasured", "why": str(e)}
+            except Exception as e:          # the bench's own fault: never a pass, never Tacit's failure
+                r = {"ok": False, "outcome": "unmeasured", "why": f"could not measure: the bench's own error: {e!r}"}
+            o = outcome(r)
+            why = r.get("why") or ("failed" if o == "failed" else "could not measure")
+            if r.get("outside") and not why.startswith("outside Tacit"):
+                why = f"outside Tacit: {why}"
+            s["status"] = now_[sid] = o
+            s["outcomes"].append([self.rep, o])
+            s["why"] = None if o == "worked" else why
+            s["detail"] = {k: v for k, v in r.items() if k not in ("ok", "why", "outcome")}
+            self.log(f"{name}.{sid}: {o} {s['why'] or ''}")
             self.settle(f"{name}: {sid}")
             self.save()
 
@@ -516,19 +899,30 @@ class Bench:
     def s_creator_record_unfocused(self):
         return self.guest("creator-record", 60, timeout=900)
 
+    def video(self, codec, name):
+        if not (self.base and os.path.exists(os.path.expanduser(f"~/tacit-vm/media/{name}"))):
+            return {"ok": False, "outcome": "unmeasured", "why": "could not measure: no local video on the cloud machine (tools/daily-bench makes it with ffmpeg)"}
+        r = self.guest("creator-video", f"{self.base}/media/{name}", 600, timeout=1200)
+        self.metric(f"creator.{codec}_dropped", "lightness", "% dropped", f"A {codec.upper()} video: frames dropped", r.get("dropped_pct"))
+        self.metric(f"creator.{codec}_cpu", "lightness", "%", f"A {codec.upper()} video: Thyris's processor", r.get("cpu_pct"))
+        return r
+
+    def s_creator_video_vp9(self):
+        return self.video("vp9", "tacit-daily-vp9.webm")
+
+    def s_creator_video_h264(self):
+        return self.video("h264", "tacit-daily-h264.mp4")
+
     def s_creator_youtube(self):
         r = self.guest("creator-youtube", 600, timeout=1200)
-        self.metric("creator.youtube_dropped", "lightness", "% dropped", "YouTube: frames dropped", r.get("dropped_pct"))
-        self.metric("creator.youtube_cpu", "lightness", "%", "YouTube: Thyris's processor", r.get("cpu_pct"))
+        self.metric("creator.youtube_dropped", "outside", "% dropped", "YouTube: frames dropped", r.get("dropped_pct"))
+        self.metric("creator.youtube_cpu", "outside", "%", "YouTube: Thyris's processor", r.get("cpu_pct"))
         return r
 
     def s_creator_upload(self):
-        r = self.guest("creator-upload-start", timeout=120)
-        if not r.get("ok"):
-            return r
-        time.sleep(2)
+        self.need(self.guest("creator-upload-start", timeout=120), "the page's file picker open")
         self.type("tacit-daily-upload-4711")      # a picker is searched by typing (Files' pick mode)
-        time.sleep(2)
+        self.need(self.wait("settled", "", 10), "the picker's search drawn")
         self.key("ret")
         return self.guest("creator-upload-done")
 
@@ -540,11 +934,11 @@ class Bench:
         return r
 
     def s_creator_find_audio(self):
-        self.guest("creator-audio-place")
+        self.need(self.guest("creator-audio-place"), "the voice note in Downloads")
         self.key("meta_l")
-        time.sleep(1)
+        self.need(self.wait("layer", "quickshell:overview", 10), "search shown")
         self.type("voice-4711")
-        time.sleep(2)
+        self.need(self.wait("settled", "", 10), "the search's results drawn")
         self.key("ret")
         r = self.guest("creator-audio-playing", timeout=60)
         self.key("esc")
@@ -552,21 +946,19 @@ class Bench:
 
     def s_office_lo_install(self):
         r = self.install("libreoffice")
-        if r.get("ok"):
-            m = self.guest("office-make", timeout=600)
-            if not m.get("ok"):
-                return {"ok": False, "why": f"got, but {m.get('why')}"}
+        if outcome(r) == "worked":
+            self.need(self.guest("office-make", timeout=600), "the test documents made by LibreOffice")
         return r
 
     def office(self, kind, keys):
         o = self.guest("office-open", kind, timeout=150)
-        if not o.get("ok"):
+        if outcome(o) != "worked":
             return o
         for k in keys:
             self.type(k[5:]) if k.startswith("type:") else self.key(*k.split())
-            time.sleep(0.4)
+            self.need(self.wait("settled", "", 10), f"LibreOffice still after {k}")
         s = self.guest("office-saved", kind, o.get("mtime", 0), timeout=90)
-        if not s.get("ok"):
+        if outcome(s) != "worked":
             return s
         return self.guest("office-reopen", kind, timeout=150)
 
@@ -581,7 +973,7 @@ class Bench:
 
     def s_office_pdf(self):
         r = self.guest("office-viewer", 1, timeout=60)
-        if not r.get("ok"):
+        if outcome(r) != "worked":
             return r
         self.key("pgdn")
         return self.guest("office-viewer", 2, timeout=60)
@@ -590,11 +982,9 @@ class Bench:
         return self.guest("office-call", timeout=180)
 
     def s_office_zoom(self):
-        b = self.guest("office-zoom", "before", timeout=90)
-        if not b.get("ok"):
-            return b
-        self.vm("scroll", "--ctrl", b["x"], b["y"], -3)
-        time.sleep(1)
+        b = self.need(self.guest("office-zoom", "before", timeout=90), "the page open in Thyris")
+        self.act("scroll", "--ctrl", b["x"], b["y"], -3)
+        self.need(self.wait("settled", "", 10), "the page still after Ctrl+scroll")
         a = self.guest("office-zoom", "after", timeout=60)
         ok = bool(a.get("ratio") and b.get("ratio") and a["ratio"] > b["ratio"] * 1.05)
         return {"ok": ok, "before": b.get("ratio"), "after": a.get("ratio"),
@@ -622,10 +1012,7 @@ class Bench:
         return self.guest("dev-theme", "zed")
 
     def s_developer_web_ide(self):
-        r = self.guest("dev-ide", "start", timeout=120)
-        if not r.get("ok"):
-            return r
-        time.sleep(1)
+        self.need(self.guest("dev-ide", "start", timeout=120), "the web IDE page open, its key listener ready")
         self.type("const tacit = daily")
         r = self.guest("dev-ide", "result", timeout=90)
         for x in r.get("latency_ms") or []:
@@ -645,40 +1032,36 @@ class Bench:
         return self.guest("gamer-discord", timeout=200)
 
     def s_gamer_fullscreen(self):
-        r = self.guest("gamer-fullscreen", "start", timeout=120)
+        r = self.need(self.guest("gamer-fullscreen", "start", timeout=120), "Thyris and Settings open")
         for keys, step in ((["f11"], "full"), (["alt", "tab"], "away"), (["alt", "tab"], "back")):
-            if not r.get("ok"):
-                break
             self.key(*keys)
-            time.sleep(1.5)
             r = self.guest("gamer-fullscreen", step, timeout=60)
+            if outcome(r) != "worked":
+                break
         return r
 
     def s_everyday_notify(self):
         return self.guest("everyday-notify", timeout=90)
 
     def s_everyday_screenshot(self):
-        self.guest("everyday-screenshot", "before")
+        self.need(self.guest("everyday-screenshot", "before"), "the screenshots folder read")
         self.key("ctrl", "print")
         return self.guest("everyday-screenshot", "after")
 
     def s_everyday_clipboard(self):
-        r = self.guest("everyday-clipboard", "start", timeout=90)
-        if r.get("ok"):
-            self.key("ctrl", "c")
-            time.sleep(0.5)
-            r = self.guest("everyday-clipboard", "copied")
-        if r.get("ok"):
+        self.need(self.guest("everyday-clipboard", "start", timeout=90), "the page with its text selected")
+        self.key("ctrl", "c")
+        r = self.guest("everyday-clipboard", "copied")
+        if outcome(r) == "worked":
             self.key("ctrl", "v")
-            time.sleep(0.5)
             r = self.guest("everyday-clipboard", "pasted")
         return r
 
     def s_everyday_emoji(self):
         self.key("meta_l", "dot")
-        time.sleep(1.5)
+        self.need(self.wait("layer", "quickshell:overview", 10), "the emoji picker shown")
         self.type("grinning")
-        time.sleep(1.5)
+        self.need(self.wait("settled", "", 10), "the emoji found")
         self.key("ret")
         r = self.guest("everyday-emoji")
         self.key("esc")
@@ -688,40 +1071,29 @@ class Bench:
         return self.update(2, task="everyday")
 
     def s_everyday_sleep_video(self):
-        r = self.guest("everyday-video", "start", timeout=90)
-        if not r.get("ok"):
-            return r
+        self.need(self.guest("everyday-video", "start", timeout=90), "the page's video paused")
         w = self.sleep_wake(task="everyday", measure=False)
-        if not w.get("ok"):
+        if outcome(w) != "worked":
             return w
         return self.guest("everyday-video", "after", timeout=60)
 
-    # -- the two modes
+    # -- the two modes, each part from the known state, the whole --repeat times
     def short(self, runs):
         self.preflight()
-        self.log("app starts")
-        self.app_starts(runs)
-        self.page_load(5)
-        for i in range(runs):
-            self.log(f"tasks, round {i + 1} of {runs}")
-            self.round(i)
-            self.save()
-        self.log("10 minutes at rest")
-        self.idle()
-        self.growth(self.memory0, self.guest("memory").get("pss", {}))
-        self.reliability()
-        self.disk()
-        self.save()
-        for name in self.suites:
-            self.log(f"suite {name}")
-            self.suite(name)
-        self.reliability()
-        if self.pw:
-            for i in range(runs):
-                self.log(f"start {i + 1} of {runs}")
-                self.boot()
-                self.save()
-            self.reliability()
+        for self.rep in range(self.repeat):
+            if self.repeat > 1:
+                self.log(f"repeat {self.rep + 1} of {self.repeat}")
+            if self.lang:
+                self.part_from_base("language", self.language_checks)
+            if not self.suites_only:
+                self.part_from_base("starts", lambda: (self.app_starts(runs), self.page_load(5)))
+                self.part_from_base("tasks", lambda: self.rounds(runs))
+                self.log("10 minutes at rest")
+                self.part_from_base("rest", self.idle)
+            for name in self.suites:
+                self.part_from_base(f"suite {name}", lambda name=name: self.suite(name))
+            if self.pw and not self.lang and not self.suites_only:     # a language run's starts are not the computer's usual
+                self.part_from_base("starts from power on", lambda: self.boots(runs))
         self.finish()
 
     def soak(self, seconds, runs):
@@ -729,37 +1101,62 @@ class Bench:
         start, hours = time.time(), seconds / 3600
         reserve = min(1500, seconds * 0.05)        # the last part: 10 minutes at rest, the update and its restart
         every = seconds / 8                         # "hourly" over an 8-hour soak
-        last_sample, i = 0.0, 0
-        mem0 = self.memory0
-        while time.time() < start + seconds - reserve:
-            i += 1
-            self.log(f"soak round {i}")
-            self.app_starts(1)
-            self.page_load(2)
-            self.round(i)
-            if time.time() - last_sample >= every:
-                last_sample = time.time()
-                m = self.guest("memory").get("pss", {})
-                for k, v in m.items():
-                    self.metric(f"soak.pss.{k}", "lightness", "MB", f"{APP_WORDS.get(k, k)}: memory over the soak", v["mb"])
-                self.disk()
-            self.save()
-        self.rec["soak_rounds"] = i
-        self.idle()
-        self.growth(mem0, self.guest("memory").get("pss", {}), hours=max(hours, 1e-6))
-        self.reliability()
-        self.disk()
+
+        def rounds():
+            # one part: the soak is the same desktop for hours (its decay is the point), so no state is loaded within it
+            last_sample, i = 0.0, 0
+            mem0 = self.guest("memory").get("pss", {})
+            while time.time() < start + seconds - reserve:
+                i += 1
+                self.log(f"soak round {i}")
+                self.app_starts(1)
+                self.page_load(2)
+                self.round(i)
+                if time.time() - last_sample >= every:
+                    last_sample = time.time()
+                    for k, v in self.guest("memory").get("pss", {}).items():
+                        self.metric(f"soak.pss.{k}", "lightness", "MB", f"{APP_WORDS.get(k, k)}: memory over the soak", v["mb"])
+                    self.disk()
+                self.save()
+            self.rec["soak_rounds"] = i
+            self.idle()
+            self.growth(mem0, self.guest("memory").get("pss", {}), hours=max(hours, 1e-6))
+        self.part_from_base("soak", rounds)
         for name in self.suites:
-            self.suite(name)
+            self.part_from_base(f"suite {name}", lambda name=name: self.suite(name))
         if self.pw:
-            self.update(1)
-            self.reliability()
+            self.part_from_base("update", lambda: self.update(1))
         self.finish()
 
     def finish(self):
-        self.guest("restore", timeout=200)
-        self.guest("serve", "stop")
-        self.guest("sampler", "stop")
+        """the computer left as found: daily-start loaded (with no snapshots, the run's own changes undone one by one)"""
+        self.part = "finish"
+        aggregate(self.rec)
+        restored = False
+        if self.start_saved:
+            ok, said = self.snapshot("load", "daily-start")
+            if ok:
+                restored = True
+                for name in ("daily-base", "daily-start"):
+                    self.snapshot("delete", name)
+            else:
+                self.rec["infra"].append({"what": "putting the computer back (daily-start)", "why": said, "part": "finish"})
+        if not restored:
+            self.guest("restore", timeout=200)
+            self.guest("serve", "stop")
+            if self.lived_in:
+                self.guest("lived-in-restore")
+            if self.lang:           # back in its own language: set back, restarted, signed in with its own keys
+                self.guest("lang-restore")
+                try:
+                    self.reboot()
+                except Unmeasured as e:
+                    self.rec["infra"].append({"what": "the restart into the computer's own language", "why": str(e), "part": "finish"})
+                self.guest("serve", "stop")
+            self.guest("sampler", "stop")
+        self.rec["left_as_found"] = "daily-start loaded" if restored else "the run's changes undone one by one"
+        if self.server:
+            self.server.terminate()
         self.rec["ended"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         self.save()
         self.log("done")
@@ -768,13 +1165,51 @@ class Bench:
 PASSWORD_STEPS = {"update-restart", "sleep-video"}
 
 
+def agreement(outcomes):
+    """a step's outcomes on one build ([repeat, outcome] each): per repeat, its worst measured one (failed over
+    worked); unstable when it both worked and failed; the words for the scorecard"""
+    by = {}
+    for rep, o in outcomes:
+        by.setdefault(rep, []).append(o)
+    per = []
+    for rep in sorted(by):
+        os_ = by[rep]
+        per.append("failed" if "failed" in os_ else "worked" if "worked" in os_ else "unmeasured")
+    measured = [o for _, o in outcomes if o != "unmeasured"]
+    unstable = "worked" in measured and "failed" in measured
+    m = [o for o in per if o != "unmeasured"]
+    words = (f"{max(m.count('worked'), m.count('failed'))} of {len(m)} repeats the same" if len(per) > 1 and m else "")
+    if len(per) > 1 and len(m) < len(per):
+        words += f" ({len(per) - len(m)} could not be measured)"
+    return unstable, per, words
+
+
+def aggregate(rec):
+    """each task's and suite step's consistency over its runs and repeats: one that both worked and failed on this
+    build is unstable, shown as such and left out of the comparison until it is fixed"""
+    for t in rec.get("tasks", {}).values():
+        t["unstable"], t["by_repeat"], t["agreement"] = agreement(t.get("outcomes", []))
+    for su in rec.get("suites", {}).values():
+        for st in su["steps"].values():
+            if st.get("outcomes"):
+                st["unstable"], st["by_repeat"], st["agreement"] = agreement(st["outcomes"])
+                if st["unstable"]:
+                    st["status"] = "unstable"
+    return rec
+
+
+def variant(lang, lived_in, soak):
+    """the kind of run, in its record's name: runs are compared only with runs of their own kind"""
+    return ("-lived-in" if lived_in else "") + (f"-{lang}" if lang else "") + ("-soak" if soak else "")
+
+
 # ---------------------------------------------------------------- the comparison and the scorecard
 
-def margins(out_dir, mode, exclude=None):
+def margins(out_dir, kind, exclude=None):
     """how far the median moved between two runs of one earlier release (1.5 times it), to widen the provisional margins;
     the release being judged is left out, so its own trouble cannot widen them"""
     seen = {}
-    files = sorted(glob_records(out_dir, mode))
+    files = sorted(glob_records(out_dir, kind))
     by_version = {}
     for f in files:
         try:
@@ -796,11 +1231,10 @@ def margins(out_dir, mode, exclude=None):
     return seen
 
 
-def glob_records(out_dir, mode):
-    pat = re.compile(r"daily-[0-9][^/]*?(-soak)?(\.\d+)?\.json$")
+def glob_records(out_dir, kind):
+    pat = re.compile(r"daily-[0-9][0-9.]*" + re.escape(kind) + r"(\.\d+)?\.json$")
     for f in os.listdir(out_dir) if os.path.isdir(out_dir) else []:
-        m = pat.match(f)
-        if m and bool(m.group(1)) == (mode == "soak"):
+        if pat.match(f):
             yield os.path.join(out_dir, f)
 
 
@@ -821,19 +1255,35 @@ def compare(cur, prev, learned):
             clear = a["low"] > b["high"] or a["high"] < b["low"]
             changes.append({"what": m["words"], "metric": k, "before": b["median"], "now": a["median"], "unit": m["unit"],
                             "margin": round(margin, 2), "worse": worse, "clear": clear})
+    unstable = []
     for k, t in cur["tasks"].items():
         p = prev.get("tasks", {}).get(k)
-        if p and t["runs"] - t["passed"] != p["runs"] - p["passed"]:
-            worse = (t["runs"] - t["passed"]) > (p["runs"] - p["passed"])
-            changes.append({"what": t["words"], "metric": f"task.{k}", "before": f"{p['passed']} of {p['runs']}",
-                            "now": f"{t['passed']} of {t['runs']}", "worse": worse, "clear": True})
-    for name, s in cur.get("suites", {}).items():
+        if t.get("unstable") or (p or {}).get("unstable"):
+            unstable.append(t["words"])
+            continue
+        if p and failures(t) != failures(p):
+            worse = failures(t) > failures(p)
+            changes.append({"what": t["words"], "metric": f"task.{k}", "before": f"{worked(p)} of {p['runs']}",
+                            "now": f"{worked(t)} of {t['runs']}", "worse": worse, "clear": True})
+    for name, su in cur.get("suites", {}).items():
         ps = prev.get("suites", {}).get(name, {}).get("steps", {})
-        for sid, st in s["steps"].items():
-            was = ps.get(sid, {}).get("status")
-            if was in ("passed", "failed") and st["status"] in ("passed", "failed") and was != st["status"]:
-                changes.append({"what": f"{s['title']} {st['words']}", "metric": f"suite.{name}.{sid}", "before": was,
+        for sid, st in su["steps"].items():
+            was = ps.get(sid, {})
+            if st.get("unstable") or was.get("unstable"):
+                unstable.append(f"{su['title']} {st['words']}")
+                continue
+            if was.get("status") in ("worked", "failed") and st["status"] in ("worked", "failed") and was["status"] != st["status"]:
+                changes.append({"what": f"{su['title']} {st['words']}", "metric": f"suite.{name}.{sid}", "before": was["status"],
                                 "now": st["status"], "worse": st["status"] == "failed", "clear": True})
+    if unstable:
+        changes.append({"what": "unstable on one build, left out of the comparison", "metric": "unstable", "before": "",
+                        "now": "; ".join(unstable), "worse": False, "clear": False, "note": True})
+    pl = (prev.get("lived_in") or {}).get("checks") or {}
+    for k, (ok, words) in ((cur.get("lived_in") or {}).get("checks") or {}).items():
+        was = (pl.get(k) or [None])[0]
+        if ok is not None and was is not None and ok != was:
+            changes.append({"what": f"the update over a lived-in home: {k}", "metric": f"lived_in.{k}", "before": "passed" if was else "failed",
+                            "now": "passed" if ok else "failed", "worse": not ok, "clear": True})
     rel_c, rel_p = cur.get("reliability", {}), prev.get("reliability", {})
     for k, words in (("crashes", "a crash"), ("qml", "a new QML error"), ("not_answering", "an app not answering"),
                      ("stuck", "a stuck surface"), ("journal", "a new error in the journal")):
@@ -845,6 +1295,15 @@ def compare(cur, prev, learned):
             changes.append({"what": words, "metric": f"reliability.{k}", "before": "", "now": x if isinstance(x, str) else x.get("exe", str(x)),
                             "worse": True, "clear": True})
     return changes
+
+
+def failures(t):
+    """a task's failures: Tacit's, not the could-not-measures (the VM, a mirror, a site)"""
+    return t.get("failed", t["runs"] - t.get("passed", 0) - t.get("outside", 0))
+
+
+def worked(t):
+    return t.get("worked", t.get("passed", 0))
 
 
 def fmt(v, unit):
@@ -862,15 +1321,17 @@ def fmt(v, unit):
 
 
 def verdict(steps):
-    ran = [s for s in steps.values() if s["status"] in ("passed", "failed") or s.get("seen")]
-    failed = [s for s in steps.values() if s["status"] == "failed" or s.get("seen") == "failed"]
+    """works, works with problems (a step that failed, or is unstable), does not work (a core step failed), or not
+    judged here (a core step not measured); what could not be measured is neither a pass nor a failure"""
+    ran = [x for x in steps.values() if x["status"] in ("worked", "failed", "unstable") or x.get("seen")]
+    failed = [x for x in steps.values() if x["status"] in ("failed", "unstable") or x.get("seen") == "failed"]
     if not ran:
         return "not judged here", []
-    if any(s["core"] for s in failed):
+    if any(x["core"] and x["status"] == "failed" for x in failed):
         return "does not work", failed
     if failed:
         return "works with problems", failed
-    if any(s["core"] and s["status"] == "not run" for s in steps.values()):
+    if any(x["core"] and x["status"] in ("not run", "unmeasured") for x in steps.values()):
         return "not judged here", []
     return "works", []
 
@@ -884,68 +1345,118 @@ def merge_hardware(rec, hw):
             st.update(seen=h["seen"], by=h.get("by", ""), on=h.get("on", ""), note=h.get("note", ""))
 
 
+def counts(rec):
+    """every check's runs (the daily tasks' and the suites' steps') by outcome"""
+    c = {"worked": 0, "failed": 0, "unmeasured": 0}
+    for t in rec.get("tasks", {}).values():
+        for k in c:
+            c[k] += t.get(k, 0)
+    for su in rec.get("suites", {}).values():
+        for st in su["steps"].values():
+            for _, o in st.get("outcomes", []):
+                c[o] += 1
+    return c
+
+
 def scorecard(rec, prev=None, changes=None, hw=None):
     merge_hardware(rec, hw)
+    aggregate(rec)
     v = rec["version"]
     mode = "8-hour soak" if rec["mode"] == "soak" else "short run"
+    rep = rec.get("repeat", 1)
     L = [f"# Tacit Daily: {v}", "",
          f"{mode.capitalize()} in the test VM, {rec.get('started', '')[:10]}, {rec.get('minutes', 0):.0f} minutes, tacit {rec.get('tacit') or '?'}"
-         + ("" if rec.get("kvm", True) else " (no KVM: slow)") + ".",
-         "Report only: this does not hold a release back yet. The margins are provisional until 2-3 releases set the normal spread.", ""]
+         + ("" if rec.get("kvm", True) else " (no KVM: slow)") + (f", {rep} times over on this build" if rep > 1 else "") + ".",
+         "Report only: this does not hold a release back yet. The margins are provisional until 2-3 releases set the normal spread."]
+    lg = rec.get("language") or {}
+    L.append(f"Language: {lg.get('lang') or '?'}, keyboard {lg.get('layout') or '?'}"
+             + (f" (set for this run: {lg['set']})." if lg.get("set") else " (the computer's own)."))
+    if rec.get("lived_in"):
+        L.append(f"Started on {rec['lived_in']['from']} with a lived-in home ({rec['lived_in'].get('home')}), updated through Restart.")
+    nr_ = {x["what"]: x["why"] for x in rec.get("not_run", [])}
+    iso = next((w for k, w in nr_.items() if k.startswith("a known state")), None)
+    L.append("Each part started from the same saved state of the computer (a snapshot), and the computer was left as found."
+             if rec.get("isolated") else f"Each part started where the one before left the computer: {iso or 'no snapshots'}.")
+    L.append("")
     if rec.get("error"):
         L += [f"**The run stopped: {rec['error']}**", ""]
     tasks = rec.get("tasks", {})
-    good = [t for t in tasks.values() if t["passed"] == t["runs"]]
+    c = counts(rec)
+    good = [t for t in tasks.values() if failures(t) == 0 and not t.get("unstable") and worked(t)]
+    unstable = [t["words"] for t in tasks.values() if t.get("unstable")] + [
+        f"{su['title']} {st['words']}" for su in rec.get("suites", {}).values() for st in su["steps"].values() if st.get("unstable")]
     L += ["## In short", ""]
-    L.append(f"- Daily tasks: {len(good)} of {len(tasks)} worked every time." if tasks else "- Daily tasks: none ran.")
-    for name, s in rec.get("suites", {}).items():
-        word, _ = verdict(s["steps"])
-        L.append(f"- {s['title']} {word.capitalize()}.")
+    L.append(f"- Checks: {c['worked']} worked, {c['failed']} failed, {c['unmeasured']} could not be measured "
+             "(the VM, a mirror or a site, not Tacit; neither a pass nor a failure).")
+    L.append(f"- Daily tasks: {len(good)} of {len(tasks)} worked every time they were measured." if tasks else "- Daily tasks: none ran.")
+    if unstable:
+        L.append(f"- Unstable on this build (both worked and failed): {len(unstable)}, shown below and left out of the comparison.")
+    lived = (rec.get("lived_in") or {}).get("checks") or {}
+    if lived:
+        judged = [x for x in lived.values() if x[0] is not None]
+        L.append(f"- The update over a lived-in home: {sum(1 for x in judged if x[0])} of {len(judged)} checks passed"
+                 + (f", {len(lived) - len(judged)} not judged." if len(judged) < len(lived) else "."))
+    for name, su in rec.get("suites", {}).items():
+        word, _ = verdict(su["steps"])
+        L.append(f"- {su['title']} {word.capitalize()}.")
+    real = [x for x in (changes or []) if not x.get("note")]
     if prev is not None:
-        worse = [c for c in changes if c["worse"]]
-        L.append(f"- Against {prev['version']}: {len(changes)} changes past the margin, {len(worse)} for the worse"
-                 + (f", {sum(c['clear'] for c in worse)} of them clear." if worse else "."))
-        block = [c for c in worse if c["clear"]] + [{"what": t["words"]} for t in tasks.values() if t["passed"] < t["runs"]]
-        L.append(f"- Once this is a gate, it would {'hold the release back, for: ' + '; '.join(c['what'] for c in block[:4]) if block else 'let the release through'}.")
+        worse = [x for x in real if x["worse"]]
+        L.append(f"- Against {prev['version']}: {len(real)} changes past the margin, {len(worse)} for the worse"
+                 + (f", {sum(x['clear'] for x in worse)} of them clear." if worse else "."))
+        block = [x for x in worse if x["clear"]] + [{"what": t["words"]} for t in tasks.values() if failures(t) and not t.get("unstable")]
+        L.append(f"- Once this is a gate, it would {'hold the release back, for: ' + '; '.join(x['what'] for x in block[:4]) if block else 'let the release through'}.")
     L.append("")
     if tasks:
-        L += ["## Daily tasks", "", "| Task | Worked | What went wrong |", "|---|---|---|"]
+        L += ["## Daily tasks", "", "| Task | Worked | Failed | Could not measure | What went wrong |", "|---|---|---|---|---|"]
         for t in tasks.values():
             why = "; ".join(sorted(set(t["why"])))[:160]
-            L.append(f"| {t['words']} | {t['passed']} of {t['runs']} | {why} |")
+            mark = f"unstable ({t.get('agreement') or str(worked(t)) + ' of ' + str(t['runs']) + ' worked'}): " if t.get("unstable") else ""
+            L.append(f"| {t['words']} | {worked(t)} | {failures(t)} | {t.get('unmeasured', 0)} | {mark}{why} |")
         L.append("")
-    for name, s in rec.get("suites", {}).items():
-        word, failed = verdict(s["steps"])
-        L += [f"## {s['title']} {word.capitalize()}.", ""]
+    if lived:
+        L += [f"## The update over a lived-in home (from {rec['lived_in']['from']}, {rec['lived_in'].get('home')})", ""]
+        for k, (ok, words) in lived.items():
+            L.append(f"- {'ok' if ok else 'not judged' if ok is None else 'FAIL'}: {k}: {words}")
+        L.append("")
+    for name, su in rec.get("suites", {}).items():
+        word, failed = verdict(su["steps"])
+        L += [f"## {su['title']} {word.capitalize()}.", ""]
         for f in failed:
-            L.append(f"- Problem: {f['words']}: {f.get('why') or f.get('note') or 'failed'}"
-                     + (f" (seen by {f.get('by')} on {f.get('on')})" if f.get("seen") else ""))
-        ok = [x["words"] for x in s["steps"].values() if x["status"] == "passed"]
+            if f.get("unstable"):
+                L.append(f"- Unstable: {f['words']} ({f.get('agreement') or 'worked and failed'}; the last failure: {f.get('why')})")
+            else:
+                L.append(f"- Problem: {f['words']}: {f.get('why') or f.get('note') or 'failed'}"
+                         + (f" (seen by {f.get('by')} on {f.get('on')})" if f.get("seen") else ""))
+        ok = [x["words"] for x in su["steps"].values() if x["status"] == "worked"]
         if ok:
             L.append(f"- Worked in the VM: {'; '.join(ok)}.")
-        seen = [f"{x['words']} ({x['seen']}, {x.get('by')} on {x.get('on')})" for x in s["steps"].values() if x.get("seen") == "passed"]
+        seen = [f"{x['words']} ({x['seen']}, {x.get('by')} on {x.get('on')})" for x in su["steps"].values() if x.get("seen") == "passed"]
         if seen:
             L.append(f"- Seen working by a tester: {'; '.join(seen)}.")
-        nr = [f"{x['words']} ({x.get('why')})" for x in s["steps"].values() if x["status"] == "not run"]
+        um = [f"{x['words']} ({x.get('why')})" for x in su["steps"].values() if x["status"] == "unmeasured"]
+        if um:
+            L.append(f"- Could not measure: {'; '.join(um)}.")
+        nr = [f"{x['words']} ({x.get('why')})" for x in su["steps"].values() if x["status"] == "not run"]
         if nr:
             L.append(f"- Not run: {'; '.join(nr)}.")
-        tester = [f"{x['words']} [{x['mark']}]" for x in s["steps"].values() if x["status"] == "needs a tester" and not x.get("seen")]
+        tester = [f"{x['words']} [{x['mark']}]" for x in su["steps"].values() if x["status"] == "needs a tester" and not x.get("seen")]
         if tester:
             L.append(f"- Needs a tester (HARDWARE-DAILY.md): {'; '.join(tester)}.")
         L.append("")
-    for section, title in (("speed", "Speed"), ("lightness", "Lightness")):
+    for section, title in (("speed", "Speed"), ("lightness", "Lightness"), ("outside", "Measured on a site, outside Tacit")):
         rows = [(k, m) for k, m in rec.get("metrics", {}).items() if m["section"] == section]
         if not rows:
             continue
         L += [f"## {title}", "", "Median, and the lowest to the highest of the times it was taken.", "",
               "| | Median | Spread | Times |" + (f" {prev['version']} |" if prev else ""), "|---|---|---|---|" + ("---|" if prev else "")]
         for k, m in rows:
-            s = stats(m["samples"])
-            if not s:
+            st = stats(m["samples"])
+            if not st:
                 continue
-            p = stats(prev["metrics"][k]["samples"]) if prev and k in prev.get("metrics", {}) else None
-            L.append(f"| {m['words']} | {fmt(s['median'], m['unit'])} | {fmt(s['low'], m['unit'])} to {fmt(s['high'], m['unit'])} | {s['n']} |"
-                     + (f" {fmt(p['median'], m['unit']) if p else '-'} |" if prev else ""))
+            pv = stats(prev["metrics"][k]["samples"]) if prev and k in prev.get("metrics", {}) else None
+            L.append(f"| {m['words']} | {fmt(st['median'], m['unit'])} | {fmt(st['low'], m['unit'])} to {fmt(st['high'], m['unit'])} | {st['n']} |"
+                     + (f" {fmt(pv['median'], m['unit']) if pv else '-'} |" if prev else ""))
         L.append("")
     rel = rec.get("reliability", {})
     L += ["## Reliability", ""]
@@ -954,22 +1465,46 @@ def scorecard(rec, prev=None, changes=None, hw=None):
         items = rel.get(k) or []
         show = "; ".join((x if isinstance(x, str) else x.get("exe") or x.get("text") or str(x)) for x in items[:4])
         L.append(f"- {words}: {len(items)}{': ' + show[:200] if items else ''}")
-    j = rel.get("journal") or {}
-    L.append(f"- Errors in the journal: {sum(j.values())} ({len(j)} kinds){': ' + '; '.join(list(j)[:3])[:200] if j else ''}")
+    j_ = rel.get("journal") or {}
+    L.append(f"- Errors in the journal: {sum(j_.values())} ({len(j_)} kinds){': ' + '; '.join(list(j_)[:3])[:200] if j_ else ''}")
     L.append("")
+    um = [(t["words"], w) for t in tasks.values() for w in sorted(set(t.get("unmeasured_why", [])))]
+    um += [(f"{su['title']} {x['words']}", x.get("why")) for su in rec.get("suites", {}).values() for x in su["steps"].values()
+           if x["status"] == "unmeasured"]
+    um += [(f"the part {p_['name']}" + (f" (repeat {p_['repeat'] + 1})" if rep > 1 else ""), p_.get("why"))
+           for p_ in rec.get("parts", []) if p_.get("outcome") == "unmeasured"]
+    infra = rec.get("infra", [])
+    if um or infra:
+        L += ["## Could not measure", "", "Not Tacit's failures and not passes: the VM's machinery (each fault tried once more), "
+              "a mirror or a site (outside Tacit), or a step's own setup.", ""]
+        L += [f"- {w}: {why}" for w, why in um]
+        if infra:
+            L.append(f"- Faults of the VM's machinery along the way: {len(infra)} (each tried once more; the first: "
+                     f"{infra[0]['what']}: {str(infra[0]['why'])[:120]})")
+        L.append("")
+    tried = rec.get("retries", [])
+    if tried:
+        L += ["## Tried twice", "", "A check that failed and was done once more (typing into the VM can drop a key); both results are kept.", ""]
+        L += [f"- {x['what']} ({x.get('part')}): first {x.get('first')}; then {x.get('second')}" for x in tried]
+        L.append("")
+    if unstable:
+        L += ["## Unstable on this build", "", "These both worked and failed on the same build. Each is left out of the comparison "
+              "until it is the same every time.", ""]
+        L += [f"- {w}" for w in unstable]
+        L.append("")
     if prev is not None:
         L += [f"## Changes since {prev['version']}", ""]
-        if not changes:
+        if not real:
             L.append("Nothing moved past its margin.")
-        for c in changes:
-            u = c.get("unit")
-            b = fmt(c["before"], u) if u else c["before"]
-            n = fmt(c["now"], u) if u else c["now"]
-            if c["metric"].startswith("reliability."):
-                L.append(f"- New: {c['what']}: {n}")
+        for x in real:
+            u = x.get("unit")
+            b = fmt(x["before"], u) if u else x["before"]
+            n = fmt(x["now"], u) if u else x["now"]
+            if x["metric"].startswith("reliability."):
+                L.append(f"- New: {x['what']}: {n}")
                 continue
-            L.append(f"- {'Worse' if c['worse'] else 'Better'}{' (clear)' if c['clear'] and u else ''}: {c['what']}: {b} to {n}"
-                     + (f" (margin {fmt(c['margin'], u)})" if u else ""))
+            L.append(f"- {'Worse' if x['worse'] else 'Better'}{' (clear)' if x['clear'] and u else ''}: {x['what']}: {b} to {n}"
+                     + (f" (margin {fmt(x['margin'], u)})" if u else ""))
         L.append("")
     if hw:
         L += [f"## On a computer: {hw.get('on', '?')}, by {hw.get('by', '?')}, {hw.get('date', '')} (tools/hardware-daily)", ""]
@@ -980,9 +1515,8 @@ def scorecard(rec, prev=None, changes=None, hw=None):
             if k.startswith("daily."):
                 L.append(f"- {HW_WORDS.get(k, k)}: {x.get('seen')}{': ' + x['note'] if x.get('note') else ''}")
         L.append("")
-    nr = rec.get("not_run", [])
     L += ["## Not measured here", ""]
-    for x in nr:
+    for x in rec.get("not_run", []):
         L.append(f"- {x['what']}: not run ({x['why']}).")
     L.append(f"- Only on a computer: {', '.join(rec.get('hardware_only', HARDWARE_ONLY))}. The protocol is HARDWARE-DAILY.md.")
     return "\n".join(L) + "\n"
@@ -998,7 +1532,8 @@ def duration(s):
 
 
 def parse(argv):
-    a = {"version": None, "soak": 0, "compare": None, "suites": [], "runs": 3, "report": False, "machine": False}
+    a = {"version": None, "soak": 0, "compare": None, "suites": [], "runs": 3, "report": False, "machine": False,
+         "lang": None, "lived_in": None, "home": "lived.json", "day": "", "suites_only": False, "repeat": 1, "record": None}
     i = 0
     while i < len(argv):
         x = argv[i]
@@ -1018,6 +1553,32 @@ def parse(argv):
             a["runs"] = int(argv[i + 1]); i += 1
         elif x == "--report":
             a["report"] = True
+        elif x == "--lang":
+            a["lang"] = argv[i + 1]; i += 1
+            if a["lang"] not in LANGS:
+                sys.exit(f"daily-bench: no language {a['lang']} ({', '.join(LANGS)})")
+        elif x == "--lived-in":
+            # here a flag; on the cloud machine it carries the release before (--lived-in <previous>)
+            if i + 1 < len(argv) and re.fullmatch(r"\d+(\.\d+)+", argv[i + 1]) and a["version"]:
+                a["lived_in"] = argv[i + 1]; i += 1
+            else:
+                a["lived_in"] = True
+        elif x == "--home":
+            a["home"] = argv[i + 1]; i += 1
+        elif x == "--arch-day":
+            a["day"] = argv[i + 1]; i += 1
+        elif x == "--suites-only":
+            a["suites_only"] = True
+        elif x == "--repeat":
+            a["repeat"] = int(argv[i + 1]); i += 1
+            if a["repeat"] < 1:
+                sys.exit("daily-bench: --repeat takes 1 or more")
+        elif x == "--record":
+            # here a folder; on the cloud machine a flag (the exchanges go to its own record/ and are fetched back)
+            if i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+                a["record"] = argv[i + 1]; i += 1
+            else:
+                a["record"] = True
         elif x == "--machine":
             a["machine"] = True
         elif x.startswith("-") or a["version"]:
@@ -1027,6 +1588,10 @@ def parse(argv):
         i += 1
     if not a["version"]:
         sys.exit(__doc__)
+    if a["soak"] and (a["lang"] or a["lived_in"]):
+        sys.exit("daily-bench: --lang and --lived-in go with the short run, not --soak")
+    if a["suites_only"] and not a["suites"]:
+        sys.exit("daily-bench: --suites-only needs --suite")
     return a
 
 
@@ -1042,16 +1607,16 @@ def previous_release(root, version):
 def write(root, a, name):
     out_dir = f"{root}/out/x86_64"
     rec = json.load(open(f"{out_dir}/{name}.json"))
-    soak = "-soak" if rec["mode"] == "soak" else ""
+    kind = rec.get("variant", "-soak" if rec["mode"] == "soak" else "")
     cmp_version = a["compare"] or previous_release(root, a["version"])
     prev, changes = None, None
     if cmp_version:
-        f = f"{out_dir}/daily-{cmp_version}{soak}.json"      # a release's first run (a second run compares with it)
+        f = f"{out_dir}/daily-{cmp_version}{kind}.json"      # a release's first run of this kind
         if f == f"{out_dir}/{name}.json":
             f = None
         if f and os.path.exists(f):
             prev = json.load(open(f))
-            changes = compare(rec, prev, margins(out_dir, rec["mode"], exclude=rec["version"]))
+            changes = compare(rec, prev, margins(out_dir, kind, exclude=rec["version"]))
             rec["compare"] = {"with": cmp_version, "changes": changes}
             json.dump(rec, open(f"{out_dir}/{name}.json", "w"), indent=1)
         else:
@@ -1063,17 +1628,65 @@ def write(root, a, name):
     return rec
 
 
+def lived_in_parts(root, a, d):
+    """for --lived-in: tools/vm-smoke's test repo of this release (REPO_ONLY), the lived-in settings file, and the
+    release before and the day of Arch, for the cloud machine's half"""
+    previous = previous_release(root, a["version"])
+    if not previous:
+        sys.exit(f"daily-bench: notes.json names no release before {a['version']}")
+    releases = os.environ.get("TACIT_SHELL_RELEASES", "/home/abdul/dev/tacit-fix/wt-115/tests/config/releases")
+    home = os.path.join(releases, a["home"])
+    if not os.path.exists(home):
+        sys.exit(f"daily-bench: no settings file {home} (TACIT_SHELL_RELEASES: the shell's tests/config/releases)")
+    shutil.copy(home, f"{d}/home.json")
+    p = subprocess.run([f"{HERE}/vm-smoke", a["version"]], env=dict(os.environ, REPO_ONLY=f"{d}/repo"), capture_output=True, text=True)
+    if p.returncode or not os.path.isdir(f"{d}/repo"):
+        sys.exit(f"daily-bench: tools/vm-smoke could not make the test repo: {(p.stdout + p.stderr).strip()[-400:]}")
+    day = subprocess.run([f"{HERE}/arch-day"], capture_output=True, text=True).stdout.strip()
+    return ["--lived-in", previous, "--arch-day", day]
+
+
+def make_media(dest, seconds=600):
+    """the local video, made with ffmpeg if it is not there already for this recipe: a moving test pattern (testsrc2,
+    1280x720 at 30 frames a second) with a 440 Hz tone, as VP9 in WebM and as H.264 in MP4, Opus sound in both"""
+    os.makedirs(dest, exist_ok=True)
+    recipe = hashlib.sha256(json.dumps([MEDIA, TONE, seconds]).encode()).hexdigest()[:12]
+    stamp = os.path.join(dest, "recipe")
+    if open(stamp).read().strip() == recipe if os.path.exists(stamp) else False:
+        if all(os.path.exists(os.path.join(dest, n)) for n in MEDIA):
+            return [os.path.join(dest, n) for n in MEDIA]
+    for name, codec in MEDIA.items():
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"testsrc2=size=1280x720:rate=30:duration={seconds}",
+                        "-f", "lavfi", "-i", f"sine=frequency=440:sample_rate=48000:duration={seconds}", "-map", "0:v", "-map", "1:a",
+                        *codec, *TONE, "-c:a", "libopus", "-b:a", "96k", os.path.join(dest, name)], check=True)
+    open(stamp, "w").write(recipe + "\n")
+    return [os.path.join(dest, n) for n in MEDIA]
+
+
+def send_media(out_dir, on, at):
+    """the local video to the cloud machine's ~/tacit-vm/media, each file only when what is there differs"""
+    files = make_media(f"{out_dir}/daily-media")
+    there = dict(reversed(line.split(None, 1)) for line in on("cd ~/tacit-vm/media && sha256sum * 2>/dev/null").stdout.splitlines()
+                 if len(line.split(None, 1)) == 2)
+    for f in files:
+        sha = hashlib.sha256(open(f, "rb").read()).hexdigest()
+        if there.get(os.path.basename(f)) != sha:
+            if subprocess.run(["gcloud", "compute", "scp", *at, f, f"{MACHINE}:~/tacit-vm/media/"], capture_output=True).returncode:
+                sys.exit(f"daily-bench: could not copy {os.path.basename(f)} to the cloud machine")
+
+
 def main():
     a = parse(sys.argv[1:])
     if a["machine"]:
         os.chdir(HERE)
-        b = Bench(a["version"], a["soak"], a["runs"], a["suites"])
+        b = Bench(a["version"], a["soak"], a["runs"], a["suites"], a["lang"], a["lived_in"], a["day"], a["suites_only"],
+                  a["repeat"], bool(a["record"]))
         b.soak(a["soak"], a["runs"]) if a["soak"] else b.short(a["runs"])
         return
     root = os.path.dirname(HERE)
     out_dir = f"{root}/out/x86_64"
     os.makedirs(out_dir, exist_ok=True)
-    base = f"daily-{a['version']}{'-soak' if a['soak'] else ''}"
+    base = f"daily-{a['version']}{variant(a['lang'], a['lived_in'], a['soak'])}"
     if a["report"]:
         names = sorted((f[:-5] for f in os.listdir(out_dir) if re.fullmatch(re.escape(base) + r"(\.\d+)?\.json", f)), key=len)
         if not names:
@@ -1091,6 +1704,9 @@ def main():
         os.makedirs(d)
         for f in ("vm", "daily-bench", "daily-bench-guest", "daily-bench-suites", "vm-smoke-guest"):
             shutil.copy(f"{HERE}/{f}", d)
+        extra = []
+        if a["lived_in"]:
+            extra = lived_in_parts(root, a, d)
         if os.environ.get("TACIT_VM_PASSWORD"):
             fd = os.open(f"{d}/password", os.O_WRONLY | os.O_CREAT, 0o600)
             os.write(fd, os.environ["TACIT_VM_PASSWORD"].encode())
@@ -1098,27 +1714,53 @@ def main():
         with tarfile.open(f"{tmp}/daily.tar", "w") as t:
             t.add(d, "daily")
         at = ["--project", PROJECT, "--zone", ZONE]
-        on = lambda cmd, timeout=600: subprocess.run(["timeout", str(timeout), "gcloud", "compute", "ssh", MACHINE, *at, "--command", cmd],
-                                                     capture_output=True, text=True)
-        on("rm -rf ~/tacit-vm/daily && mkdir -p ~/tacit-vm")
-        if subprocess.run(["gcloud", "compute", "scp", *at, f"{tmp}/daily.tar", f"{MACHINE}:~/tacit-vm/"], capture_output=True).returncode:
-            sys.exit("daily-bench: could not copy the run to the cloud machine")
+        def on(cmd, timeout=600, tries=2):
+            """a command on the cloud machine; ssh itself failing (255) is tried once more"""
+            for _ in range(tries):
+                p = subprocess.run(["timeout", str(timeout), "gcloud", "compute", "ssh", MACHINE, *at, "--command", cmd],
+                                   capture_output=True, text=True)
+                if p.returncode != 255:
+                    return p
+            return p
+        if on("rm -rf ~/tacit-vm/daily && mkdir -p ~/tacit-vm/media").returncode:
+            sys.exit("daily-bench: could not measure: the cloud machine does not answer (gcloud compute ssh failed twice)")
+        if "creator" in a["suites"]:
+            send_media(out_dir, on, at)
+        if all(subprocess.run(["gcloud", "compute", "scp", *at, f"{tmp}/daily.tar", f"{MACHINE}:~/tacit-vm/"], capture_output=True).returncode
+               for _ in range(2)):
+            sys.exit("daily-bench: could not measure: the run could not be copied to the cloud machine (twice)")
         args = " ".join([a["version"], "--runs", str(a["runs"])] + (["--soak", f"{int(a['soak'])}s"] if a["soak"] else [])
-                        + sum((["--suite", s] for s in a["suites"]), []))
+                        + sum((["--suite", s] for s in a["suites"]), []) + (["--lang", a["lang"]] if a["lang"] else [])
+                        + (["--suites-only"] if a["suites_only"] else []) + extra
+                        + (["--repeat", str(a["repeat"])] if a["repeat"] > 1 else []) + (["--record"] if a["record"] else []))
         # the run outlasts an ssh session: started apart, then waited for (as tools/vm-smoke does)
         on("cd ~/tacit-vm && tar -xf daily.tar && rm daily.tar && cp daily/vm vm "
            "&& { [ ! -f daily/password ] || mv daily/password password; } "
            f"&& (setsid nohup bash -c 'cd ~/tacit-vm/daily && python3 ./daily-bench --machine {args} > run.log 2>&1; echo $? > done' "
            "> /dev/null 2>&1 < /dev/null &)")
+        wait = 2
         while on("test -f ~/tacit-vm/daily/done", 120).returncode:
-            time.sleep(60)
+            time.sleep(wait)        # the poll's interval, longer each time up to a minute: the run takes its own time
+            wait = min(60, wait * 2)
         print(on("cat ~/tacit-vm/daily/run.log").stdout)
         if subprocess.run(["gcloud", "compute", "scp", *at, f"{MACHINE}:~/tacit-vm/daily/daily.json", f"{out_dir}/{name}.json"],
                           capture_output=True).returncode:
             sys.exit(f"daily-bench: no record came back from {MACHINE}")
+        if a["record"]:
+            os.makedirs(a["record"], exist_ok=True)
+            subprocess.run(["gcloud", "compute", "scp", *at, f"{MACHINE}:~/tacit-vm/daily/record/exchanges.jsonl",
+                            f"{a['record']}/exchanges.jsonl"], capture_output=True)
+            shutil.copy(f"{out_dir}/{name}.json", f"{a['record']}/daily.json")
+            json.dump({"version": a["version"], "args": sys.argv[1:], "recorded": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                       "from": "a real run on the test VM"}, open(f"{a['record']}/meta.json", "w"), indent=1)
     finally:
         shutil.rmtree(tmp)
-    write(root, a, name)
+    rec = write(root, a, name)
+    if a["record"]:
+        shutil.copy(f"{out_dir}/{name}.md", f"{a['record']}/daily.md")
+        print(f"recorded: {a['record']} (exchanges.jsonl, daily.json, daily.md, meta.json)")
+    if rec.get("error"):        # a run that stopped: its scorecard says so, and so does the exit
+        sys.exit(f"daily-bench: the run stopped: {rec['error']}")
 
 
 if __name__ == "__main__":

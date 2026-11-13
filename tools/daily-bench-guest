@@ -18,13 +18,53 @@ CDP_PORT = 9333
 # says the picture is there
 WALL_A, WALL_B = (200, 40, 40), (40, 60, 200)
 MAGENTA, CYAN = (255, 0, 255), (0, 255, 255)
+# the full-screen test patterns: colours far apart and from the desktop's own, laid out so that a picture shown
+# stretched, cropped, mirrored, half drawn or not at all does not match. The two wallpapers have the same colours in other
+# places, so one is never taken for the other.
+YELLOW, ORANGE, LIME, BLUE, RED, TEAL = (255, 230, 0), (255, 128, 0), (0, 220, 0), (30, 60, 255), (220, 0, 0), (0, 150, 150)
+WALL_A_GRID = [[RED, YELLOW, LIME, BLUE], [MAGENTA, CYAN, ORANGE, TEAL]]
+WALL_B_GRID = [[CYAN, ORANGE, TEAL, MAGENTA], [BLUE, LIME, RED, YELLOW]]
+PICTURE_GRID = [[MAGENTA, ORANGE], [LIME, BLUE]]
+PDF_BANDS = [CYAN, YELLOW, MAGENTA]
+WALL_MATCH = 0.80      # the share of the screen the wallpaper must show as itself: the bar, the notch and the dock cover the rest
+PREVIEW_AREA = 0.02    # a preview column's picture is more than 3 % of the screen, a list's thumbnail far less
 # surfaces that come and go by themselves: not stuck when they are there after a task
 TRANSIENT = {"quickshell:notificationPopup", "quickshell:notificationAway", "quickshell:onScreenDisplay"}
 
 
 def out(**kw):
+    """a step's answer, its last line; "outcome" is worked, failed, or unmeasured (could not measure: the step's own
+    setup, or the computer, not Tacit)"""
+    kw.setdefault("outcome", "worked" if kw.get("ok") else "failed")
     print(json.dumps(kw))
     sys.exit(0)
+
+
+class Missed(Exception):
+    """what was waited for, a thing Tacit does, did not happen: the step failed"""
+
+
+class Unmeasurable(Exception):
+    """the step could not measure: its own setup failed, or the computer did not answer; neither a pass nor Tacit's failure"""
+
+
+def poll(cond, timeout, every=0.2):
+    """cond() asked every `every` s until it gives something true, for at most `timeout` s: that value, or None. The
+    one wait in this file that stands for "until": every other wait is a measurement and says so"""
+    end = now() + timeout
+    while True:
+        v = cond()
+        if v or now() >= end:
+            return v
+        time.sleep(min(every, max(0.0, end - now())))
+
+
+def until(what, cond, timeout, every=0.2, setup=False):
+    """poll(), and on the deadline "did not happen in N s: <what>": Missed, or Unmeasurable when it is the step's own setup"""
+    v = poll(cond, timeout, every)
+    if not v:
+        raise (Unmeasurable if setup else Missed)(f"did not happen in {timeout:g} s: {what}")
+    return v
 
 
 def now():
@@ -188,6 +228,94 @@ def parse_ppm(b):
     return w, h, b[i + 1:i + 1 + w * h * 3]
 
 
+# Screenshots are taken at a quarter of the screen's size (grim -s 0.25: 480x270 for 1920x1080) and judged so:
+#   settled: two screenshots in a row that differ in at most SETTLE_SHARE of their pixels by more than SETTLE_DIFF in a
+#     channel (an animation, a fade, a page still drawing are not settled); asked every 0.25 s, for at most 10 s;
+#   a pattern colour: a pixel within NEAR (distance in RGB) of it, which takes scaling's blur at the cells' edges and a
+#     moderate dimming, and not black: a black screen is no pattern colour.
+SETTLE_DIFF, SETTLE_SHARE, NEAR = 24, 0.005, 80
+
+
+def same_screen(a, b):
+    if not (a and b) or a[:2] != b[:2]:
+        return False
+    da, db, n, diff = a[2], b[2], 0, 0
+    for i in range(0, len(da) - 2, 3 * 3):
+        n += 1
+        diff += abs(da[i] - db[i]) > SETTLE_DIFF or abs(da[i + 1] - db[i + 1]) > SETTLE_DIFF or abs(da[i + 2] - db[i + 2]) > SETTLE_DIFF
+    return n > 0 and diff / n <= SETTLE_SHARE
+
+
+def settled(person, timeout=10):
+    """the screen once it has stopped changing: the second of two equal screenshots in a row"""
+    last = [person.shot()]
+
+    def still():
+        img = person.shot()
+        same = same_screen(last[0], img)
+        last[0] = img
+        return img if same else None
+    return until("the screen settled (two screenshots in a row the same)", still, timeout, every=0.25)
+
+
+def dist2(r, g, b, c):
+    return (r - c[0]) ** 2 + (g - c[1]) ** 2 + (b - c[2]) ** 2
+
+
+def full_screen_match(img, grid):
+    """the share of the screen showing the full-screen pattern `grid` (rows of colours) where it should: each pixel the
+    pattern colour of its cell, within NEAR"""
+    if not img:
+        return 0.0
+    w, h, d = img
+    rows, cols = len(grid), len(grid[0])
+    hit = total = 0
+    for y in range(0, h, 2):
+        cell = grid[min(rows - 1, y * rows // h)]
+        for x in range(0, w, 2):
+            i = (y * w + x) * 3
+            total += 1
+            hit += dist2(d[i], d[i + 1], d[i + 2], cell[min(cols - 1, x * cols // w)]) <= NEAR * NEAR
+    return hit / total if total else 0.0
+
+
+def find_pattern(img, grid, min_area):
+    """where on the screen the picture `grid` (rows x cols of colours) shows: its first cell's colour found, the box it
+    must span from there, and in each cell the share of pixels of that cell's colour. (found, share of its worst cell,
+    share of the screen it takes); found when every cell is at least 80 % its colour and the box at least min_area of
+    the screen"""
+    if not img:
+        return False, 0.0, 0.0
+    w, h, d = img
+    rows, cols = len(grid), len(grid[0])
+    first = grid[0][0]
+    xs, ys = [0] * w, [0] * h
+    for y in range(h):
+        for x in range(0, w):
+            i = (y * w + x) * 3
+            if dist2(d[i], d[i + 1], d[i + 2], first) <= NEAR * NEAR:
+                xs[x] += 1
+                ys[y] += 1
+    span = lambda v: [i for i, n in enumerate(v) if n >= max(3, 0.3 * max(v))] if max(v) else []
+    sx, sy = span(xs), span(ys)
+    if not sx or not sy:
+        return False, 0.0, 0.0
+    cw, ch = sx[-1] - sx[0] + 1, sy[-1] - sy[0] + 1
+    x0, y0 = sx[0], sy[0]
+    worst = 1.0
+    for r in range(rows):
+        for c in range(cols):
+            hit = total = 0
+            for y in range(y0 + r * ch + ch // 8, min(h, y0 + (r + 1) * ch - ch // 8)):
+                for x in range(x0 + c * cw + cw // 8, min(w, x0 + (c + 1) * cw - cw // 8)):
+                    i = (y * w + x) * 3
+                    total += 1
+                    hit += dist2(d[i], d[i + 1], d[i + 2], grid[r][c]) <= NEAR * NEAR
+            worst = min(worst, hit / total if total else 0.0)
+    area = (cw * cols) * (ch * rows) / (w * h)
+    return worst >= 0.8 and area >= min_area, round(worst, 3), round(area, 4)
+
+
 def fraction(img, test, step=3):
     """the share of the picture's pixels (every step-th one) for which test(r, g, b) holds"""
     if not img:
@@ -224,12 +352,28 @@ def solid(w, h, c):
     return png(w, h, lambda y: line)
 
 
-def pdf(c):
-    """a one-page A4 PDF filled with the colour c"""
-    page = f"{c[0] / 255:.3f} {c[1] / 255:.3f} {c[2] / 255:.3f} rg 0 0 595 842 re f".encode()
-    objs = [b"<< /Type /Catalog /Pages 2 0 R >>", b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R >>",
-            b"<< /Length %d >>\nstream\n" % len(page) + page + b"\nendstream"]
+def grid_png(w, h, grid):
+    """a picture of rows x cols cells, each one colour of `grid`"""
+    rows, cols = len(grid), len(grid[0])
+    lines = [b"".join(bytes(grid[r][min(cols - 1, x * cols // w)]) for x in range(w)) for r in range(rows)]
+    return png(w, h, lambda y: lines[min(rows - 1, y * rows // h)])
+
+
+def pdf(bands, pages=None):
+    """an A4 PDF, a page per list of colours in `pages` (or one page of `bands`), each page in horizontal bands, top
+    first"""
+    objs = [b"<< /Type /Catalog /Pages 2 0 R >>", None]
+    kids = []
+    for bs in pages or [bands]:
+        n, ops = len(bs), []
+        for k, c in enumerate(bs):
+            y = 842 - (k + 1) * 842 / n
+            ops.append(f"{c[0] / 255:.3f} {c[1] / 255:.3f} {c[2] / 255:.3f} rg 0 {y:.1f} 595 {842 / n:.1f} re f")
+        page = "\n".join(ops).encode()
+        kids.append(len(objs) + 1)
+        objs.append(b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents %d 0 R >>" % (len(objs) + 2))
+        objs.append(b"<< /Length %d >>\nstream\n" % len(page) + page + b"\nendstream")
+    objs[1] = b"<< /Type /Pages /Kids [" + b" ".join(b"%d 0 R" % k for k in kids) + b"] /Count %d >>" % len(kids)
     body, offsets = b"%PDF-1.4\n", []
     for n, o in enumerate(objs, 1):
         offsets.append(len(body))
@@ -268,11 +412,11 @@ def fixture(d):
 
 
 def materials():
-    """the pictures and the PDF, made once; readable by the person"""
+    """the test patterns, made once; readable by the person"""
     os.makedirs(STATE, exist_ok=True)
     os.chmod(STATE, 0o755)
-    want = {"wall-a.png": lambda: solid(1920, 1080, WALL_A), "wall-b.png": lambda: solid(1920, 1080, WALL_B),
-            "picture.png": lambda: solid(1200, 900, MAGENTA), "document.pdf": lambda: pdf(CYAN)}
+    want = {"wall-a.png": lambda: grid_png(1920, 1080, WALL_A_GRID), "wall-b.png": lambda: grid_png(1920, 1080, WALL_B_GRID),
+            "picture.png": lambda: grid_png(1200, 900, PICTURE_GRID), "document.pdf": lambda: pdf(PDF_BANDS)}
     for name, make in want.items():
         if not os.path.exists(f"{STATE}/{name}"):
             with open(f"{STATE}/{name}", "wb") as f:
@@ -412,12 +556,7 @@ def listen(spec, ident):
                       why=None if t else f"no {shows} within {limit} s of the press")
     else:
         check = {"locked": lambda: person.locked(), "unlocked": lambda: unlocked(person), "usable": lambda: usable(person)}[shows]
-        t = None
-        while now() < press + limit:
-            if check():
-                t = now()
-                break
-            time.sleep(0.05)
+        t = now() if poll(check, max(0.0, press + limit - now()), every=0.05) else None
         result.update(ok=t is not None, ms=ms(press, t) if t else None,
                       why=None if t else f"not {shows} within {limit} s of the press")
     with open(res + ".tmp", "w") as f:
@@ -739,10 +878,7 @@ def quit_app(person, app):
                     os.kill(p, sig)
                 except OSError:
                     pass
-        end = now() + 5
-        while now() < end and running(person, app):
-            time.sleep(0.1)
-        if not running(person, app):
+        if poll(lambda: not running(person, app), 5, every=0.1):
             return True
     return False
 
@@ -750,11 +886,10 @@ def quit_app(person, app):
 def start_app(person, app, cold, limit=45):
     """the app started (after a drop of the file cache for a cold start) until its window is mapped and it answers"""
     if running(person, app) and not quit_app(person, app):
-        return {"ok": False, "why": f"{app} could not be closed before its start"}
+        raise Unmeasurable(f"{app} could not be closed before its start")
     if cold:
         os.sync()
-        open("/proc/sys/vm/drop_caches", "w").write("3\n")
-        time.sleep(1)
+        open("/proc/sys/vm/drop_caches", "w").write("3\n")     # returns once the cache is dropped
     try:
         events = Events(person)
     except OSError:
@@ -764,24 +899,19 @@ def start_app(person, app, cold, limit=45):
     mapped = None
     end = t0 + limit
     while mapped is None and now() < end:
-        if events:
+        if events:      # Hyprland's openwindow event: the moment it mapped
             t, _ = events.wait(lambda line: line.startswith("openwindow>>"), min(1, end - now()), after=t0)
             if t is not None and windows(person, app):
                 mapped = t
-        else:
-            time.sleep(0.05)
+        elif poll(lambda: windows(person, app), min(1, end - now()), every=0.05):
+            mapped = now()
         if mapped is None and windows(person, app):
-            mapped = now()      # mapped before this looked (an event missed), or no event socket: when it was seen
+            mapped = now()      # mapped before this looked (an event missed): when it was seen
     if mapped is None:
-        return {"ok": False, "why": f"no window of {app} within {limit} s"}
-    answered = None
-    while now() < end:
-        if answers(person, app):
-            answered = now()
-            break
-        time.sleep(0.05)
+        return {"ok": False, "why": f"did not happen in {limit} s: a window of {app} mapped"}
+    answered = now() if poll(lambda: answers(person, app), max(0.0, end - now()), every=0.05) else None
     if answered is None:
-        return {"ok": False, "mapped_ms": ms(t0, mapped), "why": f"{app}'s window is there but {app} did not answer"}
+        return {"ok": False, "mapped_ms": ms(t0, mapped), "why": f"did not happen in {limit} s: {app} answering, its window there"}
     return {"ok": True, "mapped_ms": ms(t0, mapped), "answers_ms": ms(t0, answered)}
 
 
@@ -817,7 +947,7 @@ def step_preflight(version):
         json.dump({"wallpaper": person.config().get("background", {}).get("wallpaperPath", "")}, open(keep, "w"))
     step_mark()
     out(ok=have.split("-")[0] == version, tacit=have, user=person.user, shell=person.shell,
-        hyprland=(person.hypr("version") or {}).get("tag", ""),
+        hyprland=(person.hypr("version") or {}).get("tag", ""), language=language(person),
         why=None if have.split("-")[0] == version else f"the test computer has tacit {have or 'none'}, not {version}")
 
 
@@ -832,9 +962,16 @@ def step_mark(quiet=True):
 
 
 def step_settle(task):
-    """after a task: a surface or a window it left that the desktop at rest did not have (2 s on)"""
-    time.sleep(2)
+    """after a task: a surface or a window it left that the desktop at rest did not have, once the surfaces and windows
+    have stopped changing (the same twice in a row, 0.5 s apart, for at most 6 s: a closing one has gone by then)"""
     person, m = Person(), mark_file()
+    last = [None]
+
+    def steady():
+        now_ = (sorted(person.layers()), sorted(c.get("address", "") for c in person.clients()))
+        same, last[0] = now_ == last[0], now_
+        return same
+    poll(steady, 6, every=0.5)
     extra = sorted(set(person.layers()) - set(m.get("layers", [])) - TRANSIENT)
     left = [f"{c.get('class')}: {c.get('title')}" for c in person.clients() if c.get("address") not in m.get("windows", [])]
     out(task=task, layers=extra, windows=left)
@@ -873,7 +1010,7 @@ def sample():
             if inhibit.poll() is not None:
                 inhibit = subprocess.Popen(["systemd-inhibit", "--what=idle", "--who=Tacit Daily",
                                             "--why=a benchmark run", "sleep", "infinity"])
-            time.sleep(1)
+            time.sleep(1)       # the sampler's beat (a measurement's cadence, not a wait for something)
 
 
 def typing(ident):
@@ -893,10 +1030,8 @@ def step_arm_typing(ident):
         os.remove(f)
     subprocess.Popen([sys.executable, "-I", os.path.abspath(__file__), "typing", ident], stdin=subprocess.DEVNULL,
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-    end = now() + 5
-    while now() < end and not os.path.exists(f"{STATE}/typing-{ident}.ready"):
-        time.sleep(0.02)
-    out(ok=os.path.exists(f"{STATE}/typing-{ident}.ready"))
+    until("the key listener ready (its file written)", lambda: os.path.exists(f"{STATE}/typing-{ident}.ready"), 5, every=0.02, setup=True)
+    out(ok=True)
 
 
 def step_arm(spec, ident):
@@ -905,20 +1040,15 @@ def step_arm(spec, ident):
             os.remove(f)
     subprocess.Popen([sys.executable, "-I", os.path.abspath(__file__), "listen", spec, ident], stdin=subprocess.DEVNULL,
                      stdout=subprocess.DEVNULL, stderr=open(f"{STATE}/press-{ident}.log", "w"), start_new_session=True)
-    end = now() + 5
-    while now() < end and not os.path.exists(f"{STATE}/press-{ident}.ready"):
-        time.sleep(0.02)
-    ready = os.path.exists(f"{STATE}/press-{ident}.ready")
-    out(ok=ready, why=None if ready else open(f"{STATE}/press-{ident}.log").read()[-300:] or "the listener did not start")
+    if not poll(lambda: os.path.exists(f"{STATE}/press-{ident}.ready"), 5, every=0.02):
+        raise Unmeasurable("did not happen in 5 s: the key listener ready: " + (open(f"{STATE}/press-{ident}.log").read()[-300:] or "no word from it"))
+    out(ok=True)
 
 
 def step_result(ident, limit):
-    end = now() + float(limit)
     f = f"{STATE}/press-{ident}.json"
-    while now() < end and not os.path.exists(f):
-        time.sleep(0.05)
-    if not os.path.exists(f):
-        out(ok=False, why=f"no result within {limit} s")
+    # the listener writes its result itself, the key's absence too: no file at all is the listener's own failure
+    until("the key listener's result (its file written)", lambda: os.path.exists(f), float(limit), every=0.05, setup=True)
     out(**json.load(open(f)))
 
 
@@ -928,16 +1058,59 @@ def step_start(app, kind):
 
 def step_up(app, limit):
     """the app, started by something else (search's Enter), until its window is there and it answers"""
-    person, end = Person(), now() + float(limit)
-    while now() < end:
-        if windows(person, app) and answers(person, app):
-            out(ok=True)
-        time.sleep(0.2)
-    out(ok=False, why=f"{app} did not open" if not windows(person, app) else f"{app}'s window is there but it does not answer")
+    person = Person()
+    until(f"{app}'s window mapped and {app} answering", lambda: windows(person, app) and answers(person, app), float(limit))
+    out(ok=True)
 
 
-def step_wait(seconds):
-    time.sleep(float(seconds))
+def step_await(kind, arg="", timeout="10"):
+    """what the run waits for between its keys, instead of a pause: a surface open (layer) or gone (nolayer), an app's
+    window (window), a window whose class or title holds arg (titled), the screen settled, the keyboard's active layout
+    holding arg (keymap), the session locked or unlocked"""
+    person, t = Person(), float(timeout)
+    conds = {"layer": (f"{arg} shown", lambda: arg in person.layers()),
+             "nolayer": (f"{arg} gone", lambda: arg not in person.layers()),
+             "window": (f"a window of {arg}", lambda: windows(person, arg)),
+             "titled": (f"a window named {arg!r}", lambda: [c for c in person.clients() if arg.lower() in (c.get("class", "") + " " + c.get("title", "")).lower()]),
+             "keymap": (f"the keyboard on {arg}", lambda: arg.lower() in language(person)["active"].lower()),
+             "locked": ("the session locked", person.locked), "unlocked": ("the session unlocked", lambda: not person.locked())}
+    if kind == "settled":
+        settled(person, t)
+    else:
+        what, cond = conds[kind]
+        until(what, cond, t, every=0.1)
+    out(ok=True)
+
+
+def step_before_snapshot():
+    """before the run saves the computer: the file cache dropped (so the snapshot holds only what is in use) and how much
+    memory that is, which the cloud machine needs free on its disk"""
+    os.sync()
+    open("/proc/sys/vm/drop_caches", "w").write("3\n")
+    m = {line.split(":")[0]: int(line.split()[1]) for line in open("/proc/meminfo")}
+    out(ok=True, used_mb=round((m["MemTotal"] - m["MemFree"]) / 1024))
+
+
+def step_ready(settle_file=""):
+    """the desktop ready for the next part: the boot lock gone, the shell answering, the notch on the screen,
+    PipeWire answering, the screen settled, and a settings file just written left alone by the shell for 3 s
+    (the same size and time twice, 1.5 s apart). Up to 120 s"""
+    person = Person()
+    until("the desktop usable (the shell answering, the notch shown)", lambda: usable(person), 120, every=0.5)
+    until("PipeWire answering", lambda: person.run(["wpctl", "status"], 5)[0] == 0, 60, every=0.5)
+    if settle_file:
+        last = [None]
+
+        def unchanged():
+            try:
+                st = os.stat(settle_file)
+            except OSError:
+                return False
+            now_, same = (st.st_size, st.st_mtime), (st.st_size, st.st_mtime) == last[0]
+            last[0] = now_
+            return same
+        until(f"{settle_file} left alone by the shell", unchanged, 60, every=1.5)
+    settled(person, 20)
     out(ok=True)
 
 
@@ -951,9 +1124,7 @@ def step_open_all():
     for app in APPS:
         if not running(person, app):
             launch(person, app, cdp=False)
-        end = now() + 45
-        while now() < end and not (windows(person, app) and (app == "thyris" or answers(person, app))):
-            time.sleep(0.2)
+        poll(lambda: windows(person, app) and (app == "thyris" or answers(person, app)), 45)
         (opened if windows(person, app) else why).append(app)
     out(ok=not why, opened=opened, why=f"not open: {', '.join(why)}" if why else None)
 
@@ -1001,24 +1172,27 @@ def page_loads(ws, url, runs):
     rows = []
     origin = url.split("/index.html")[0]
     for _ in range(runs):
+        c.events.clear()
         c.send("Page.navigate", {"url": "about:blank"})
-        time.sleep(0.4)
+        if not c.wait("Page.loadEventFired", 10):
+            raise Unmeasurable("did not happen in 10 s: Thyris on about:blank between loads")
         c.events.clear()
         c.send("Network.clearBrowserCache")
         c.send("Storage.clearDataForOrigin", {"origin": origin, "storageTypes": "cache_storage,service_workers,shader_cache"})
         t0 = now()
         c.send("Page.navigate", {"url": url})
         c.wait("Page.loadEventFired", 60)
-        row = {"error": "timed out"}
-        for _ in range(20):
-            time.sleep(0.25)
+        got = [{"error": "timed out"}]
+
+        def timing():
             r = c.send("Runtime.evaluate", {"expression": READ, "returnByValue": True})
             try:
-                row = json.loads(r["result"]["result"]["value"])
+                got[0] = json.loads(r["result"]["result"]["value"])
             except (KeyError, TypeError, ValueError):
-                continue
-            if row.get("load", 0) > 0 and row.get("fcp", 0) > 0:      # the first paint can be noted after the load
-                break
+                return False
+            return got[0].get("load", 0) > 0 and got[0].get("fcp", 0) > 0     # the first paint can be noted after the load
+        poll(timing, 5, every=0.25)
+        row = got[0]
         row["wall"] = ms(t0, now())
         rows.append(row)
     c.close()
@@ -1039,52 +1213,44 @@ def empty_workspace(person):
     """the desktop with no window over it (workspace 9, Tacit's last); the workspace before, to go back to"""
     before = (person.hypr("activeworkspace") or {}).get("id")
     person.dispatch("hl.dsp.focus({ workspace = 9 })")
-    time.sleep(0.5)
+    until("workspace 9 in front", lambda: (person.hypr("activeworkspace") or {}).get("id") == 9, 5, every=0.1, setup=True)
     return before, (person.hypr("activeworkspace") or {}).get("windows", 1) == 0
 
 
 def step_wallpaper():
-    """a picture of one colour made the wallpaper as the picker does it (the shell's wallpapers apply): the settings
-    file holds it, and a screenshot shows it over most of the screen. Timed from the ask to the screenshot that shows it."""
+    """a full-screen test pattern made the wallpaper as the picker does it (the shell's wallpapers apply): the settings
+    file holds it, and the settled screen shows that pattern, as itself, over at least WALL_MATCH of the screen. Timed
+    from the ask to the first screenshot that shows it; judged on the settled screen after it. The state alone is not
+    enough: on 2026-11-12 the live system's said the wallpaper was shown while the screen stayed black."""
     person = Person()
     materials()
-    a, b = (f"{STATE}/wall-a.png", WALL_A), (f"{STATE}/wall-b.png", WALL_B)
+    a, b = (f"{STATE}/wall-a.png", WALL_A_GRID), (f"{STATE}/wall-b.png", WALL_B_GRID)
     cur = person.config().get("background", {}).get("wallpaperPath", "")
-    (target, tc), (_, oc) = (b, a) if cur == a[0] else (a, b)
+    target, grid = b if cur == a[0] else a
     back, empty = empty_workspace(person)
-    first = fraction(person.shot(), closer(tc, oc))
-    if first >= 0.5:        # the person's own picture is nearer this colour than the other: the other is the test
-        (target, tc), (_, oc) = (b, a) if target == a[0] else (a, b)
-        first = fraction(person.shot(), closer(tc, oc))
+    if not empty:
+        raise Unmeasurable("a window covers workspace 9: the desktop cannot be seen")
+    before = full_screen_match(settled(person), grid)
     t0 = now()
     person.ipc(person.shell, "call", "wallpapers", "apply", target, timeout=5)
-    shown, frac = None, first
-    while now() < t0 + 15:
-        frac = fraction(person.shot(), closer(tc, oc))
-        if frac >= 0.5:
-            shown = now()
-            break
-    saved = False
-    while now() < t0 + 20:
-        if person.config().get("background", {}).get("wallpaperPath") == target:
-            saved = True
-            break
-        time.sleep(0.2)
+    shown = poll(lambda: full_screen_match(person.shot(), grid) >= WALL_MATCH and now(), 15, every=0.1)
+    after = full_screen_match(settled(person), grid)
+    saved = poll(lambda: person.config().get("background", {}).get("wallpaperPath") == target, 20)
     if back is not None:
         person.dispatch(f"hl.dsp.focus({{ workspace = {back} }})")
     why = []
     if not saved:
-        why.append("the settings file does not hold the new picture")
-    if shown is None:
-        why.append(f"the screen did not show it (its colour on {frac:.0%} of the screen, before {first:.0%})"
-                   + ("" if empty else "; a window covered the desktop"))
-    out(ok=not why, shown_ms=ms(t0, shown) if shown else None, before=round(first, 3), after=round(frac, 3),
-        why="; ".join(why) or None)
+        why.append("did not happen in 20 s: the settings file holding the new picture")
+    if after < WALL_MATCH:
+        why.append(f"the settled screen shows the new wallpaper on {after:.0%} of it, not at least {WALL_MATCH:.0%} (before: {before:.0%})")
+    out(ok=not why, shown_ms=ms(t0, shown) if shown and after >= WALL_MATCH else None, before=round(before, 3),
+        after=round(after, 3), why="; ".join(why) or None)
 
 
 def step_files_preview():
-    """Files opened at a picture and at a PDF (files reveal, as Open folder does): each is previewed, its colour on the
-    screen over a preview's area (2 %, a preview column's picture is more than 3 %, a list's thumbnail far less)"""
+    """Files opened at a picture and at a PDF (files reveal, as Open folder does): on the settled screen each test
+    pattern shows as itself (every cell at least 80 % its colour) over at least PREVIEW_AREA of the screen: previewed,
+    not a thumbnail, a blank box or a half-drawn page"""
     person = Person()
     materials()
     d = f"{person.home}/tacit-daily"
@@ -1095,23 +1261,20 @@ def step_files_preview():
     subprocess.run(["chown", "-R", f"{person.uid}:", d])
     back, _ = empty_workspace(person)
     res, why = {}, []
-    for name, colour, key in (("picture.png", MAGENTA, "picture_ms"), ("document.pdf", CYAN, "pdf_ms")):
+    for name, grid, key in (("picture.png", PICTURE_GRID, "picture"), ("document.pdf", [[c] for c in PDF_BANDS], "pdf")):
         t0 = now()
         person.ipc(person.shell, "call", "files", "reveal", f"{d}/{name}", timeout=5)
-        seen, frac = None, 0.0
-        while now() < t0 + 20:
-            frac = fraction(person.shot(), near(colour), step=1)
-            if frac >= 0.02:
-                seen = now()
-                break
-            time.sleep(0.1)
-        res[key] = ms(t0, seen) if seen else None
-        if seen is None:
-            why.append(f"the {'picture' if name.endswith('png') else 'PDF'} was not previewed (its colour on {frac:.1%} of the screen)")
+        seen = poll(lambda: find_pattern(person.shot(), grid, PREVIEW_AREA)[0] and now(), 20, every=0.2)
+        found, worst, area = find_pattern(settled(person), grid, PREVIEW_AREA)
+        res[f"{key}_ms"] = ms(t0, seen) if seen and found else None
+        res[f"{key}_area"] = area
+        if not found:
+            why.append(f"the {'picture' if key == 'picture' else 'PDF'} was not previewed as itself on the settled screen "
+                       f"(its worst cell {worst:.0%} its colour, the box {area:.1%} of the screen; needs 80 % and {PREVIEW_AREA:.0%})")
     quit_app(person, "files")
     if back is not None:
         person.dispatch(f"hl.dsp.focus({{ workspace = {back} }})")
-    out(ok=not why, why="; ".join(why) or None, pdftoppm=bool(subprocess.run(["which", "pdftoppm"], capture_output=True).returncode == 0), **res)
+    out(ok=not why, why="; ".join(why) or None, pdftoppm=subprocess.run(["which", "pdftoppm"], capture_output=True).returncode == 0, **res)
 
 
 def step_praxis():
@@ -1123,19 +1286,19 @@ def step_praxis():
     qml = f"{person.shell}/claude.qml"
     t0 = now()
     launch(person, "praxis")
-    state, listed = None, None
-    while now() < t0 + 45:
+    seen = [None]
+
+    def connected():
         o = person.ipc(qml, "call", "claudeapp", "state")
         try:
-            state = json.loads(o) if o else None
+            seen[0] = json.loads(o) if o else None
         except ValueError:
-            state = None
-        if state and state.get("connected"):
-            listed = now()
-            break
-        time.sleep(0.2)
-    if listed is None:
-        out(ok=False, why="Praxis did not answer" if state is None else "Praxis did not reach the agent host: no session list")
+            seen[0] = None
+        return bool(seen[0] and seen[0].get("connected")) and now()
+    listed = poll(connected, 45)
+    state = seen[0]
+    if not listed:
+        out(ok=False, why="did not happen in 45 s: " + ("Praxis answering" if state is None else "Praxis reaching the agent host (its session list)"))
     o = person.ipc(qml, "call", "claudeapp", "newSession")
     try:
         new = json.loads(o) if o else {}
@@ -1155,27 +1318,39 @@ def step_update_check():
     before = unit_runs(unit)
     if not person.spawn(["systemctl", "start", "--no-block", unit], log=f"{STATE}/update-check.log"):
         out(ok=False, why="Hyprland did not take the command")
-    state = {}
-    while now() < t0 + 30 and unit_runs(unit) == before:
-        time.sleep(0.5)
-    if unit_runs(unit) == before:
-        out(ok=False, why=f"the check did not start: {open(f'{STATE}/update-check.log').read().strip()[:200]}")
-    while now() < t0 + 900:
-        o = subprocess.run(["systemctl", "show", unit, "-p", "ActiveState,Result,ExecMainStatus"], capture_output=True,
-                           text=True).stdout
-        state = dict(line.split("=", 1) for line in o.splitlines() if "=" in line)
-        if state.get("ActiveState") in ("inactive", "failed"):
-            break
-        time.sleep(1)
+    if not poll(lambda: unit_runs(unit) != before, 30, every=0.5):
+        out(ok=False, why=f"did not happen in 30 s: the check started ({open(f'{STATE}/update-check.log').read().strip()[:200]})")
+    shown = [{}]
+
+    def ended():
+        o = subprocess.run(["systemctl", "show", unit, "-p", "ActiveState,Result,ExecMainStatus"], capture_output=True, text=True).stdout
+        shown[0] = dict(line.split("=", 1) for line in o.splitlines() if "=" in line)
+        return shown[0].get("ActiveState") in ("inactive", "failed")
+    poll(ended, 900, every=1)
+    state = shown[0]
     try:
         checked = os.path.getmtime("/var/lib/tacit/updates-checked") >= w0 - 1
     except OSError:
         checked = False
     waiting = subprocess.run(["pacman", "-Qu"], capture_output=True, text=True).stdout.splitlines()
     ok = state.get("Result") == "success" and checked
-    out(ok=ok, seconds=round(now() - t0, 1), waiting=len(waiting),
+    said = "" if ok else subprocess.run(["journalctl", "--no-pager", "-o", "cat", "-u", unit, f"--since=@{int(w0)}"],
+                                        capture_output=True, text=True).stdout
+    out(ok=ok, seconds=round(now() - t0, 1), waiting=len(waiting), outside=not ok and is_outside(said),
         why=None if ok else f"the check ended {state.get('ActiveState')}/{state.get('Result')} "
-                            f"(status {state.get('ExecMainStatus')}){'' if checked else ', and the last look did not move'}")
+                            f"(status {state.get('ExecMainStatus')}){'' if checked else ', and the last look did not move'}"
+                            + (f": {OUTSIDE.search(said).group(0)}" if is_outside(said) else ""))
+
+
+# what a mirror, a site or the network says when it, not Tacit, failed (pacman's and curl's words, in English: the units
+# and Apps' helper run under LC_ALL=C)
+OUTSIDE = re.compile(r"failed retrieving file|could not resolve host|failed to download|failed to synchronize|"
+                     r"returned error: [45]\d\d|operation timed out|connection (refused|reset|timed out)|"
+                     r"temporary failure in name resolution|SSL (connect )?error|no route to host", re.I)
+
+
+def is_outside(text):
+    return bool(OUTSIDE.search(text or ""))
 
 
 def unit_runs(unit):
@@ -1229,11 +1404,10 @@ def step_update_arm():
     person = Person()
     unit, arm = "tacit-fetch-updates-now.service", "tacit-update@now.service"
     for u in (unit, arm):
-        before, t0 = unit_runs(u), now()
+        before = unit_runs(u)
         person.spawn(["systemctl", "start", u], log=f"{STATE}/update-arm.log")
-        while now() < t0 + 900 and (unit_runs(u) == before or subprocess.run(
-                ["systemctl", "is-active", u], capture_output=True, text=True).stdout.strip() in ("activating", "active")):
-            time.sleep(1)
+        poll(lambda: unit_runs(u) != before and subprocess.run(["systemctl", "is-active", u], capture_output=True,
+                                                               text=True).stdout.strip() not in ("activating", "active"), 900, every=1)
         result = subprocess.run(["systemctl", "show", u, "-p", "Result", "--value"], capture_output=True, text=True).stdout.strip()
         if unit_runs(u) == before or result != "success":
             out(ok=False, why=f"{u} {'did not start' if unit_runs(u) == before else 'ended ' + result}: "
@@ -1319,14 +1493,14 @@ def step_idle(total, windows, window, samples):
     total, windows, window, samples = float(total), int(windows), float(window), int(samples)
     person = Person()
     rest = total - windows * window - (samples - 1) * 20
-    time.sleep(max(0, rest))
+    time.sleep(max(0, rest))        # the time at rest is the measurement: nothing is waited for
     cpu, wake, sys_cpu, sys_ctxt = {}, {}, [], []
     hz = os.sysconf("SC_CLK_TCK")
     for _ in range(windows):
         t = {k: tree(v) for k, v in targets(person).items()}
         a = {p: ticks([p]) for ps in t.values() for p in ps}
         s0, t_0 = system_ticks(), now()
-        time.sleep(window)
+        time.sleep(window)          # a measuring window, so long by design
         b = {p: ticks([p]) for p in a if os.path.exists(f"/proc/{p}")}
         s1, dt = system_ticks(), now() - t_0
         for k, ps in t.items():
@@ -1340,7 +1514,7 @@ def step_idle(total, windows, window, samples):
     pss = {}
     for i in range(samples):
         if i:
-            time.sleep(20)
+            time.sleep(20)          # memory samples 20 s apart, by design
         for k, v in targets(person).items():
             if v:
                 pss.setdefault(k, []).append(pss_mb(tree(v)))
@@ -1414,6 +1588,349 @@ def step_reliability():
     out(ok=True, crashes=crashes, journal=journal, qml=qml, warnings=sorted(problems - set(qml)), not_answering=anr)
 
 
+# ---------------------------------------------------------------- another language
+
+def language(person):
+    """the language the desktop runs in (its session's LANG) and the keyboard as Hyprland has it"""
+    kb = (person.hypr("getoption", "input:kb_layout") or {}).get("str", "")
+    keymaps = [k.get("active_keymap", "") for k in (person.hypr("devices") or {}).get("keyboards", []) if k.get("main")]
+    return {"lang": person.env.get("LANG", ""), "layout": kb, "active": keymaps[0] if keymaps else ""}
+
+
+LANG_FILES = ["/etc/locale.conf", "/etc/locale.gen", "/etc/vconsole.conf", "/etc/X11/xorg.conf.d/00-keyboard.conf"]
+
+
+def step_lang_set(locale, layout):
+    """the computer set to another language and keyboard as Setup sets them at install (scripts/setup/tacit-install): the
+    locale generated and in /etc/locale.conf, the layout in vconsole.conf (Hyprland reads it there) and X11's file, two
+    layouts switched with Alt+Shift; what was there first is kept to put back. Takes effect at the next sign-in."""
+    keep = f"{STATE}/lang-orig.json"
+    if not os.path.exists(keep):
+        json.dump({f: open(f).read() if os.path.exists(f) else None for f in LANG_FILES}, open(keep, "w"))
+    supported = [line.strip() for line in open("/usr/share/i18n/SUPPORTED")]
+    line = next((x for x in supported if x in (f"{locale} UTF-8", f"{locale.split('.')[0]} UTF-8")), None)
+    if not line:
+        out(ok=False, why=f"glibc has no {locale}")
+    gen = open("/etc/locale.gen").read()
+    if not re.search(rf"^{re.escape(line)}$", gen, re.M):
+        open("/etc/locale.gen", "a").write(f"\n{line}\n")
+    p = subprocess.run(["locale-gen"], capture_output=True, text=True)
+    if p.returncode:
+        out(ok=False, why=f"locale-gen: {p.stderr[-200:]}")
+    open("/etc/locale.conf", "w").write(f"LANG={line.split()[0]}\n")
+    options = "grp:alt_shift_toggle" if "," in layout else ""
+    os.makedirs("/etc/X11/xorg.conf.d", exist_ok=True)
+    open(LANG_FILES[3], "w").write('Section "InputClass"\n    Identifier "system-keyboard"\n    MatchIsKeyboard "on"\n'
+                                   f'    Option "XkbLayout" "{layout}"\n' + (f'    Option "XkbOptions" "{options}"\n' if options else "")
+                                   + "EndSection\n")
+    open("/etc/vconsole.conf", "w").write(f"XKBLAYOUT={layout}\n" + (f"XKBOPTIONS={options}\n" if options else ""))
+    out(ok=True, locale=line.split()[0], layout=layout)
+
+
+def step_lang_restore():
+    keep = f"{STATE}/lang-orig.json"
+    if not os.path.exists(keep):
+        out(ok=True, restored=False)
+    for f, text in json.load(open(keep)).items():
+        if text is None:
+            if os.path.exists(f):
+                os.remove(f)
+        else:
+            open(f, "w").write(text)
+    os.remove(keep)
+    out(ok=True, restored=True)
+
+
+def step_lock_now():
+    """the lock as the shell's own IPC starts it (when a key did not), until logind says it is locked"""
+    person = Person()
+    person.ipc(person.shell, "call", "lock", "activate", timeout=5)
+    until("logind saying the session is locked, after the shell's lock", person.locked, 10)
+    out(ok=True)
+
+
+def step_lang_state():
+    out(ok=True, **language(Person()))
+
+
+PROBE_QML = """import QtQuick
+import Quickshell
+import qs.services
+// Tacit Daily's probe: what the shell's own services make of this computer, in the person's language, as Settings'
+// Network page (Network.ipAddress) and the VPN section (Vpn.connections) show it, printed every half second
+ShellRoot {
+    Component.onCompleted: console.log("DAILY-PROBE-START " + Network.ipAddress + Vpn.connected)
+    Timer {
+        interval: 500; running: true; repeat: true
+        onTriggered: console.log("DAILY-PROBE " + JSON.stringify({ ip: Network.ipAddress, gateway: Network.gateway,
+                                                                  vpn: Vpn.connections, connected: Vpn.connected }))
+    }
+}
+"""
+
+
+IDLE_STUB = """pragma Singleton
+import QtQuick
+import Quickshell
+Singleton {
+    property bool inhibit: false
+    readonly property bool watching: false
+    function inhibitForSession() {}
+    function toggleInhibit(active) {}
+}
+"""
+
+
+def probe(shell, work, env, want=lambda st: False, timeout=20, popen=None):
+    """the shell's Network and Vpn services read by a probe in a copy of the shell (the installed one untouched), off
+    screen, with a scratch home (the person's settings untouched) and the given environment (the person's language):
+    their view as it is once want(view) holds, or as it stands after `timeout` s; {"error": ...} when it did not run"""
+    copy = f"{work}/shell"
+    os.makedirs(work, exist_ok=True)
+    if not os.path.exists(f"{copy}/services/Network.qml"):
+        subprocess.run(["rm", "-rf", copy])
+        subprocess.run(["cp", "-a", shell, copy], check=True)
+    open(f"{copy}/daily-probe.qml", "w").write(PROBE_QML)
+    # Idle keeps the screen awake through a window of its own, which needs a desktop; the probe has none, and Idle has no
+    # part in what it reads: in this private copy only, Idle without the window
+    open(f"{copy}/services/Idle.qml", "w").write(IDLE_STUB)
+    home = f"{work}/home"
+    os.makedirs(home, exist_ok=True)
+    e = dict(env, HOME=home, XDG_CONFIG_HOME=f"{home}/.config", XDG_STATE_HOME=f"{home}/.local/state",
+             XDG_CACHE_HOME=f"{home}/.cache", XDG_DATA_HOME=f"{home}/.local/share", QT_QPA_PLATFORM="offscreen",
+             QT_QUICK_BACKEND="software", QT_QPA_OFFSCREEN_NO_GLX="1")
+    for k in ("WAYLAND_DISPLAY", "DISPLAY"):
+        e.pop(k, None)
+    argv = ["qs", "-n", "-p", f"{copy}/daily-probe.qml"]
+    p = (popen or (lambda a, env: subprocess.Popen(a, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)))(argv, e)
+    view, text, buf, end = None, b"", b"", now() + timeout
+    try:
+        while now() < end:
+            r, _, _ = select.select([p.stdout], [], [], max(0.0, end - now()))
+            if not r:
+                break
+            chunk = os.read(p.stdout.fileno(), 65536)
+            if not chunk:
+                break
+            text, buf = (text + chunk)[-4000:], buf + chunk
+            *lines, buf = buf.split(b"\n")
+            for line in lines:
+                m = re.search(rb"DAILY-PROBE (\{.*\})", line)
+                if m:
+                    view = json.loads(m.group(1))
+            if view is not None and want(view):
+                break
+    finally:
+        p.kill()
+        p.wait()
+    return view if view is not None else {"error": text.decode(errors="replace")[-400:] or "no word from the probe"}
+
+
+def person_probe(person, want):
+    os.makedirs(f"{STATE}/probe", exist_ok=True)
+    subprocess.run(["chown", "-R", f"{person.uid}:", f"{STATE}/probe"])
+    popen = lambda argv, env: subprocess.Popen(person.argv(["env", "-i", *[f"{k}={v}" for k, v in env.items()], *argv]),
+                                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    r = probe(person.shell, f"{STATE}/probe", person.env, want, popen=popen)
+    if "error" in r:
+        raise Unmeasurable(f"the probe did not run: {r['error']}")
+    return r
+
+
+def step_lang_network():
+    """Settings' Network page's IP (Network.ipAddress, what the page shows, or "None"), read in the person's language"""
+    person = Person()
+    r = person_probe(person, lambda st: bool(st.get("ip")))
+    raw = person.text(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device", "status"]) or ""
+    ok = bool(r.get("ip"))
+    out(ok=ok, ip=r.get("ip"), lang=person.env.get("LANG"), nmcli=raw.splitlines()[:3],
+        why=None if ok else ("the probe did not run: " + r["error"] if "error" in r else
+                             f"the Network page shows no IP in {person.env.get('LANG')} (nmcli says {raw.splitlines()[:2]})"))
+
+
+def step_lang_vpn():
+    """a VPN shown as connected: a WireGuard profile made here, needing no server (NetworkManager has it up without a
+    peer), brought up, then the shell's Vpn service read in the person's language; the profile removed after"""
+    person = Person()
+    name = "tacit-daily-vpn"
+    nm = lambda *a: subprocess.run(["nmcli", *a], capture_output=True, text=True, env=dict(os.environ, LC_ALL="C"))
+    nm("connection", "delete", name)
+    key = base64.b64encode(os.urandom(32)).decode()
+    r = nm("connection", "add", "type", "wireguard", "ifname", "wg-daily", "con-name", name, "connection.autoconnect", "no",
+           "wireguard.private-key", key, "ipv4.method", "manual", "ipv4.addresses", "10.213.0.2/32", "ipv6.method", "disabled")
+    up = r.returncode == 0 and nm("connection", "up", name).returncode == 0
+    if not up:
+        nm("connection", "delete", name)
+        out(ok=False, why=f"the stand-in VPN could not be brought up: {(r.stderr or r.stdout).strip()[:200]}")
+    until("NetworkManager saying the stand-in VPN is activated", lambda: "activated" in nm(
+        "-t", "-f", "GENERAL.STATE", "connection", "show", name).stdout, 20, every=0.5, setup=True)
+    p = person_probe(person, lambda st: any(c.get("name") == name and c.get("active") for c in st.get("vpn") or []))
+    nm("connection", "delete", name)
+    mine = [c for c in p.get("vpn") or [] if c.get("name") == name]
+    ok = bool(mine and mine[0].get("active")) and p.get("connected") is True
+    out(ok=ok, seen=mine, lang=person.env.get("LANG"),
+        why=None if ok else ("the probe did not run: " + p["error"] if "error" in p else
+                             f"the shell does not show the VPN as connected in {person.env.get('LANG')} (it read {mine or 'no VPN'})"))
+
+
+# ---------------------------------------------------------------- a lived-in home, before and after an update
+
+# settings a person chose (not the defaults), which an update must keep
+CHOICES = {"appearance.transparency.enable": False, "battery.low": 30, "light.night.colorTemperature": 4500}
+OVERRIDE = 'hl.config({ input = { kb_layout = "us" } })\n'     # what Settings > Hyprland wrote up to 1.2.13
+VCONSOLE, MIRRORS, UPDATE_RESULT = "/etc/vconsole.conf", "/etc/pacman.d/mirrorlist", "/var/lib/tacit/update-result"
+
+
+def chosen_idle(text):
+    """the packaged hypridle.conf as Settings' Lock & sleep copies it into the home when the person changes a time: the
+    whole file, the lock's timeout (the first) set to their 600 s"""
+    return re.sub(r"(timeout\s*=\s*)\d+", lambda m: m.group(1) + "600", text, count=1)
+
+
+def dig(d, path, value=None, put=False):
+    *head, last = path.split(".")
+    for k in head:
+        d = d.setdefault(k, {}) if put else (d.get(k) or {})
+    if put:
+        d[last] = value
+    return d.get(last)
+
+
+def packaged_hypridle():
+    o = subprocess.run(["pacman", "-Qlq", "tacit-shell"], capture_output=True, text=True).stdout.split()
+    return next((f for f in o if f.endswith("/hypr/hypridle.conf")), None)
+
+
+def idle_lines(text):
+    """hypridle.conf without the person's own numbers (the three timeouts), to compare one release's with another's"""
+    return [re.sub(r"(timeout\s*=\s*)\d+", r"\1N", line).strip() for line in text.splitlines()
+            if line.strip() and not line.strip().startswith("#")]
+
+
+def step_lived_in_home(settings, day):
+    """the home of someone who has used Tacit for a while, on the release before: that release's settings file with its
+    old defaults (Loudest allowed 99, keyboard "us"), their pins, wallpaper and three settings of their own; a
+    hypridle.conf copied once into the home by Settings' Lock & sleep (the lock at 10 minutes); the kb_layout line old
+    Settings wrote into shellOverrides/main.lua; and a mirror list of their own without Tacit's server. Their files as
+    they were are kept, to put back after the run."""
+    person = Person()
+    cfg = f"{person.home}/.config/illogical-impulse/config.json"
+    idle = f"{person.home}/.config/hypr/hypridle.conf"
+    over = f"{person.home}/.config/hypr/hyprland/shellOverrides/main.lua"
+    mirrors = MIRRORS
+    keep = f"{STATE}/lived-orig.json"
+    if not os.path.exists(keep):
+        json.dump({f: open(f).read() if os.path.exists(f) else None for f in (cfg, idle, over, mirrors)}, open(keep, "w"))
+    c = json.load(open(settings))
+    pins = list(c.setdefault("dock", {}).get("pinnedApps") or [])
+    if "org.mozilla.firefox" not in pins:
+        pins.insert(pins.index("foot") + 1 if "foot" in pins else len(pins), "org.mozilla.firefox")
+    c["dock"]["pinnedApps"] = pins
+    pic = sorted(glob.glob("/usr/share/tacit/**/*.jpg", recursive=True) + glob.glob("/usr/share/backgrounds/**/*.jpg", recursive=True))
+    dig(c, "background.wallpaperPath", pic[0] if pic else f"{STATE}/wall-b.png", put=True)
+    for k, v in CHOICES.items():
+        dig(c, k, v, put=True)
+    packaged = packaged_hypridle()
+    before = open(packaged).read() if packaged else ""      # no packaged file: no copy is made (a blank one stops hypridle)
+    copied = chosen_idle(before)
+    want = {"maxAllowed": dig(c, "audio.protection.maxAllowed"), "kbLayout": dig(c, "hyprland.input.kbLayout"),
+            "pins": pins, "wallpaper": dig(c, "background.wallpaperPath"), "choices": CHOICES, "idle_before": before,
+            "packaged_idle": packaged, "session": subprocess.run(["pacman", "-Q", "tacit-session"], capture_output=True,
+                                                                  text=True).stdout.split()[-1:]}
+    json.dump(want, open(f"{STATE}/lived-home.json", "w"))
+    for path, text in ((cfg, json.dumps(c, indent=2)), (idle, copied if before else None),
+                       (over, (open(over).read() if os.path.exists(over) else "") + OVERRIDE)):
+        if text is None:
+            continue
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        open(path + ".daily", "w").write(text)
+        os.replace(path + ".daily", path)
+    subprocess.run(["chown", "-R", f"{person.uid}:", f"{person.home}/.config"])
+    open(mirrors, "w").write(f"# my own mirror\nServer = https://archive.archlinux.org/repos/{day}/$repo/os/$arch\n")
+    out(ok=True, settings=os.path.basename(settings), maxAllowed=want["maxAllowed"], kbLayout=want["kbLayout"],
+        idle_packaged=packaged)
+
+
+def step_lived_in_check(version):
+    """after the update through Restart, on that home: each thing an update has to get right on a computer already in
+    use, as {name: [ok, words]}; None where this release gives nothing to judge"""
+    person = Person()
+    want = json.load(open(f"{STATE}/lived-home.json"))
+    c = person.config()
+    have = subprocess.run(["pacman", "-Q", "tacit"], capture_output=True, text=True).stdout.split()[-1:]
+    try:
+        result = json.load(open(UPDATE_RESULT))
+    except (OSError, ValueError):
+        result = None
+    r = {}
+    v = have[0].split("-")[0] if have else "none"
+    r["updated"] = [v == version and bool((result or {}).get("ok")),
+                    f"tacit {v} installed at the restart" if v == version else f"tacit is {v}, not {version} (the install said {result})"]
+    m = dig(c, "audio.protection.maxAllowed")
+    r["old volume default"] = [m == 100, f"Loudest allowed is {m}" + ("" if m == 100 else f" (it was {want['maxAllowed']}; 100 is the default now)")]
+    k = dig(c, "hyprland.input.kbLayout")
+    r["old keyboard default"] = [k == "", f"the saved keyboard is {k!r}" + ("" if k == "" else " (an old default: the layout installed is \"\")")]
+    pins = dig(c, "dock.pinnedApps") or []
+    lost = [p for p in want["pins"] if p not in pins]
+    r["pins kept"] = [not lost, "every pin kept" if not lost else f"pins lost: {lost}"]
+    w = dig(c, "background.wallpaperPath")
+    r["wallpaper kept"] = [w == want["wallpaper"], "the wallpaper kept" if w == want["wallpaper"] else f"the wallpaper became {w!r}"]
+    changed = {k2: dig(c, k2) for k2, v2 in want["choices"].items() if dig(c, k2) != v2}
+    r["choices kept"] = [not changed, "the person's own settings kept" if not changed else f"changed back: {changed}"]
+    idle = f"{person.home}/.config/hypr/hypridle.conf"
+    packaged = want["packaged_idle"] and packaged_hypridle()
+    now_text = open(packaged).read() if packaged else ""
+    used = open(idle).read() if os.path.exists(idle) else now_text
+    lock = re.search(r"timeout\s*=\s*(\d+)", used)
+    if not want["idle_before"]:
+        r["idle time kept"] = r["idle fixes reach"] = [None, "no packaged hypridle.conf was found to copy"]
+    else:
+        r["idle time kept"] = [bool(lock) and lock.group(1) == "600", f"the lock comes after {lock.group(1) if lock else '?'} s (the person chose 600)"]
+    if not want["idle_before"]:
+        pass
+    elif idle_lines(want["idle_before"]) == idle_lines(now_text):
+        r["idle fixes reach"] = [None, "the packaged hypridle.conf did not change in this release: nothing to reach"]
+    else:
+        stale = idle_lines(used) != idle_lines(now_text)
+        r["idle fixes reach"] = [not stale, "hypridle reads this release's file (with the person's times)" if not stale else
+                                 "hypridle still reads the old copy in the home: this release's changes to it never reach this computer"]
+    system = ""
+    if os.path.exists(VCONSOLE):
+        sm = re.search(r"^XKBLAYOUT=[\"']?([^\"'\s]*)", open(VCONSOLE).read(), re.M)
+        system = sm.group(1) if sm else ""
+    kb = (person.hypr("getoption", "input:kb_layout") or {}).get("str", "")
+    if system in ("", "us"):
+        r["keyboard as installed"] = [None, "the computer was installed with a US keyboard: run with --lang de to judge it"]
+    else:
+        r["keyboard as installed"] = [kb == system, f"the keyboard is {kb!r}" + ("" if kb == system else f", not {system!r} as installed (the old Settings' kb_layout line still wins)")]
+    session = subprocess.run(["pacman", "-Q", "tacit-session"], capture_output=True, text=True).stdout.split()[-1:]
+    if session == want["session"]:
+        r["mirror list"] = [None, "tacit-session did not change in this release: its upgrade step did not run"]
+    else:
+        has = "mirror.tacitos.co" in open(MIRRORS).read()
+        r["mirror list"] = [has, "Tacit's server is in front of the person's own" if has else "the person's mirror list did not get Tacit's server: the package's upgrade step did not do its work"]
+    bad = [n for n, (ok, _) in r.items() if ok is False]
+    out(ok=not bad, checks=r, why="; ".join(f"{n}: {r[n][1]}" for n in bad) or None)
+
+
+def step_lived_in_restore():
+    """the person's files as they were before the lived-in home"""
+    keep = f"{STATE}/lived-orig.json"
+    if not os.path.exists(keep):
+        out(ok=True, restored=False)
+    person = Person()
+    for f, text in json.load(open(keep)).items():
+        if text is None:
+            if os.path.exists(f):
+                os.remove(f)
+        else:
+            open(f, "w").write(text)
+            if f.startswith(person.home):
+                subprocess.run(["chown", f"{person.uid}:", f])
+    os.remove(keep)
+    out(ok=True, restored=True)
+
+
 def step_restore():
     """the test computer as the run found it: the person's wallpaper, the test files gone, every app the run opened closed"""
     person = Person()
@@ -1431,13 +1948,16 @@ def step_restore():
 
 
 STEPS = {"preflight": step_preflight, "mark": lambda: step_mark(False), "settle": step_settle, "sampler": step_sampler,
-         "arm": step_arm, "result": step_result, "start": step_start, "up": step_up, "wait": step_wait, "quit": step_quit, "open-all": step_open_all,
+         "arm": step_arm, "result": step_result, "start": step_start, "up": step_up, "ready": step_ready, "await": step_await, "before-snapshot": step_before_snapshot, "quit": step_quit, "open-all": step_open_all,
          "close-all": step_close_all, "page-load": step_page_load, "sound": step_sound, "wallpaper": step_wallpaper,
          "files-preview": step_files_preview, "praxis": step_praxis, "update-check": step_update_check,
          "probe-repo": step_probe_repo, "update-arm": step_update_arm, "update-done": step_update_done,
          "probe-clean": step_probe_clean, "suspend": step_suspend, "desktop": step_desktop, "boot-state": step_boot_state,
          "idle": step_idle, "memory": step_memory, "disk": step_disk, "reliability": step_reliability,
-         "restore": step_restore, "listen": listen, "sample": sample, "typing": typing, "arm-typing": step_arm_typing}
+         "restore": step_restore, "lang-set": step_lang_set, "lang-restore": step_lang_restore,
+         "lang-state": step_lang_state, "lock-now": step_lock_now, "lang-network": step_lang_network, "lang-vpn": step_lang_vpn,
+         "lived-in-home": step_lived_in_home, "lived-in-check": step_lived_in_check,
+         "lived-in-restore": step_lived_in_restore, "listen": listen, "sample": sample, "typing": typing, "arm-typing": step_arm_typing}
 
 
 def suites():
@@ -1446,12 +1966,23 @@ def suites():
     return importlib.machinery.SourceFileLoader("suites", os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                                                        "daily-bench-suites")).load_module().STEPS
 
-if __name__ == "__main__":
-    steps = STEPS if len(sys.argv) > 1 and sys.argv[1] in STEPS else suites()
-    if len(sys.argv) < 2 or sys.argv[1] not in steps:
+
+def main(argv):
+    """one step, its answer printed; what went wrong mapped to the three outcomes"""
+    steps = STEPS if argv and argv[0] in STEPS else suites()
+    if not argv or argv[0] not in steps:
         sys.exit(__doc__)
     os.makedirs(STATE, exist_ok=True)
     try:
-        steps[sys.argv[1]](*sys.argv[2:])
-    except NoDesktop as e:
-        out(ok=False, why=str(e))
+        steps[argv[0]](*argv[1:])
+    except Missed as e:
+        out(ok=False, outcome="failed", why=str(e))
+    except (Unmeasurable, NoDesktop) as e:
+        out(ok=False, outcome="unmeasured", why=str(e))
+    except Exception as e:      # the bench's own fault: never a pass, never Tacit's failure
+        import traceback
+        out(ok=False, outcome="unmeasured", why=f"the bench's own error: {e!r} at {traceback.extract_tb(e.__traceback__)[-1].lineno}")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

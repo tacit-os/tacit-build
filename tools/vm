@@ -13,6 +13,10 @@ Runs on the cloud machine (copied there as ~/tacit-vm/vm):
   vm eject              eject the CD-ROM;          vm insert <iso>     replace the CD-ROM image
   vm reset              the power button held and pressed again
   vm status             QEMU's run state: running, suspended (asleep), ...;   vm wake   wakes a computer that sleeps
+  vm snapshot save|load|delete <name>   the whole running computer saved in, or brought back from, the disk image
+                        (QEMU's savevm/loadvm); after a load the guest's clock is set to now through the agent
+  vm snapshot list      the snapshots there are;   vm snapshot prepare   once, with the computer off: the UEFI
+                        variables (raw, which savevm refuses) as qcow2, which vm disk then starts with
   vm film <dir> <n> <s> n pictures, one every s seconds, into dir (a boot splash, a shutdown); stops early once the
                         computer is off
   vm stop               off, disk kept;           vm disk             boots the disk only (no ISO)
@@ -106,7 +110,9 @@ def boot(iso, transport="cdrom"):
     cmd = ["qemu-system-x86_64", "-machine", "q35" + (",accel=kvm" if kvm else ",accel=tcg"), "-cpu", "host" if kvm else "max",
            "-smp", "6", "-m", "8192",
            "-drive", "if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd",
-           "-drive", f"if=pflash,format=raw,file={HOME}/vars.fd",
+           # the UEFI variables as qcow2 once vm snapshot prepare has made them so: savevm needs every writable drive qcow2
+           "-drive", (f"if=pflash,format=qcow2,file={HOME}/vars.qcow2" if os.path.exists(f"{HOME}/vars.qcow2")
+                      else f"if=pflash,format=raw,file={HOME}/vars.fd"),
            # the disk first, as a computer's boot order has the installed system first: a blank one is passed over
            "-drive", f"id=disk,file={HOME}/disk.qcow2,if=none,format=qcow2", "-device", f"virtio-blk-pci,drive=disk,bootindex={1 if stick_first else 0}",
            # VM_VGA=std: QEMU's plain VGA (the bochs driver) instead, for a hibernate test: woken from hibernate, virtio-vga
@@ -175,6 +181,8 @@ def main():
         if os.environ.get("VM_KEEP_DISK") != "1":
             subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", f"{HOME}/disk.qcow2", "64G"], check=True)
         subprocess.run(["cp", "/usr/share/OVMF/OVMF_VARS_4M.fd", f"{HOME}/vars.fd"], check=True)
+        if os.path.exists(f"{HOME}/vars.qcow2"):       # a fresh start: fresh variables, not the snapshots' ones
+            os.remove(f"{HOME}/vars.qcow2")
         transport = {"start": "cdrom", "start-usb": "usb", "start-virtio": "virtio"}[a[0]]
         boot(a[1], transport)
     elif a[0] == "disk":
@@ -265,6 +273,33 @@ def main():
         qmp("system_reset")
     elif a[0] == "status":
         print(qmp("query-status")["status"])
+    elif a[0] == "snapshot" and a[1:2] == ["prepare"]:
+        pid = open(f"{HOME}/qemu.pid").read().strip() if os.path.exists(f"{HOME}/qemu.pid") else ""
+        if pid and os.path.exists(f"/proc/{pid}"):
+            sys.exit("vm: snapshot prepare needs the computer off (vm stop, or systemctl poweroff in it)")
+        if not os.path.exists(f"{HOME}/vars.qcow2"):
+            subprocess.run(["qemu-img", "convert", "-O", "qcow2", f"{HOME}/vars.fd", f"{HOME}/vars.qcow2"], check=True)
+        print("the UEFI variables are qcow2: vm disk starts with them, and vm snapshot save can save")
+    elif a[0] == "snapshot" and a[1:2] in (["save"], ["load"], ["delete"], ["list"]):
+        hmp = {"save": "savevm", "load": "loadvm", "delete": "delvm", "list": "info snapshots"}[a[1]]
+        said = qmp("human-monitor-command", {"command-line": f"{hmp} {a[2]}" if a[1] != "list" else hmp}).strip()
+        # HMP says nothing when it worked; an error comes back as text ("Error: ...", "Device 'pflash1' is writable but
+        # does not support snapshots")
+        if a[1] != "list" and said:
+            sys.exit(f"vm: {hmp}: {said}")
+        if a[1] == "list":
+            print(said)
+        if a[1] == "load":
+            # the restored computer's clock is the save's: set to now, as soon as the agent in it answers again
+            end = time.time() + 60
+            while True:
+                try:
+                    agent("guest-set-time", {"time": time.time_ns()}, timeout=5)
+                    break
+                except AgentGone as e:
+                    if time.time() > end:
+                        sys.exit(f"vm: loaded, but the clock could not be set: {e}")
+                    time.sleep(0.5)
     elif a[0] == "wake":
         qmp("system_wakeup")
     elif a[0] == "stop":
