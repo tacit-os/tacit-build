@@ -8,6 +8,7 @@ post_install() {
 	_zsh
 	_memory
 	_keyring
+	_clock
 }
 post_upgrade() {
 	post_install "$1" "$2"
@@ -46,21 +47,26 @@ Server = https://fastly.mirror.pkgbuild.com/$repo/os/$arch'
 # An NVIDIA display card: its video memory kept across sleep, by NVIDIA's own suspend services (NVIDIA's and the Arch
 # wiki's setup). Off, sleep lost what the card held and Hyprland could die on waking (an RTX 4050 laptop, Discord
 # 2026-10-20: both services disabled). A computer without the card, or without the driver, is left alone.
-# A card older than Turing (PCI device below 0x1e00, a GTX 900 or 10 series) is nouveau's: nvidia-open cannot drive it
-# and nvidia-utils' /usr/lib/modprobe.d/nvidia-utils.conf blacklists nouveau, so where no card was newer the screen had
-# only the firmware's framebuffer. A file of that name in /etc/modprobe.d replaces it without the blacklist from the
-# next start (Setup now leaves NVIDIA's driver out there); it goes again once a newer card is in.
+# A card older than Turing (PCI device below 0x1e00, a GTX 900 or 10 series) that is the only display card is nouveau's:
+# nvidia-open cannot drive it and nvidia-utils' /usr/lib/modprobe.d/nvidia-utils.conf blacklists nouveau, so the screen
+# had only the firmware's framebuffer. A file of that name in /etc/modprobe.d replaces it without the blacklist from the
+# next start (Setup now leaves NVIDIA's driver out there). Beside Intel or AMD graphics (a hybrid laptop) those draw the
+# screen, and the older card is left off, as Setup leaves it; the file goes again once the older card is not alone.
 _nvidia() {
-	local d card=0 old=0 o=/etc/modprobe.d/nvidia-utils.conf
+	# not in a chroot: there /sys is another computer's, as when the ISO is made (mkarchiso's pacstrap installs this
+	# package into the image on the build machine, whose cards wrote the override or the sleep services into every
+	# stick); the stick reads its own at start (tacit-live), Setup the installed computer's, and the next update here
+	systemd-detect-virt -q --chroot && return 0
+	local d card=0 old=0 other=0 o=/etc/modprobe.d/nvidia-utils.conf
 	for d in /sys/bus/pci/devices/*; do
-		[ "$(cat "$d/vendor" 2>/dev/null)" = 0x10de ] && case "$(cat "$d/class" 2>/dev/null)" in
-			0x03*) if (( $(cat "$d/device" 2>/dev/null || echo 0x1e00) >= 0x1e00 )); then card=1; else old=1; fi ;;
-		esac
+		case "$(cat "$d/class" 2>/dev/null)" in 0x03*) ;; *) continue ;; esac
+		if [ "$(cat "$d/vendor" 2>/dev/null)" != 0x10de ]; then other=1
+		elif (( $(cat "$d/device" 2>/dev/null || echo 0x1e00) >= 0x1e00 )); then card=1; else old=1; fi
 	done
-	if [ "$old" = 1 ] && [ "$card" = 0 ] && [ -e /usr/lib/modprobe.d/nvidia-utils.conf ] && [ ! -e "$o" ]; then
+	if [ "$old$card$other" = 100 ] && [ -e /usr/lib/modprobe.d/nvidia-utils.conf ] && [ ! -e "$o" ]; then
 		printf '%s\n' "# Tacit (tacit-session): nvidia-utils' file of this name less its \"blacklist nouveau\": this computer's" \
 			"# NVIDIA card is older than Turing, which nvidia-open cannot drive and nouveau can" > "$o"
-	elif [ "$card" = 1 ] && grep -q '^# Tacit (tacit-session)' "$o" 2>/dev/null; then
+	elif [ "$old$card$other" != 100 ] && grep -q '^# Tacit (tacit-session)' "$o" 2>/dev/null; then
 		rm -f "$o"
 	fi
 	[ "$card" = 1 ] && [ -e /usr/lib/systemd/system/nvidia-suspend.service ] || return 0
@@ -126,4 +132,26 @@ _pam_line() {
 	[ -f "$1" ] && ! grep -q pam_gnome_keyring "$1" || return 1
 	[ -z "$(tail -c1 "$1")" ] || echo >> "$1"
 	printf '%s\n' "$2" >> "$1"
+}
+
+# Windows keeps the computer's clock in local time and Tacit kept it in UTC, so Windows showed the time hours off after
+# every start of Tacit (VIProto, 2026-10-26). Setup keeps it in local time beside Windows from 1.2.14 (tacit-install's
+# windows_clock), and in UTC where Windows was set to UTC (RealTimeIsUniversal, which the shell's windows-utc reads from
+# Windows's partition); computers set up before get the same once, where Windows's loader is on an EFI partition Tacit
+# starts from and there is no /etc/adjtime (one there, LOCAL or UTC, is someone's choice). A Windows in UTC needs
+# nothing: Tacit's clock is UTC already. timedatectl also sets the clock to local time at once; where it cannot (no
+# system bus), or windows-utc cannot look (no ntfscat, or a tacit-shell from before it), the next update tries again
+_clock() {
+	local done=/var/lib/tacit/local-clock utc=/usr/share/tacit/shell/scripts/setup/windows-utc
+	[ -e "$done" ] && return 0
+	if [ ! -e /etc/adjtime ] && { [ -f /efi/EFI/Microsoft/Boot/bootmgfw.efi ] || [ -f /boot/EFI/Microsoft/Boot/bootmgfw.efi ]; }; then
+		[ -f "$utc" ] || return 0
+		python3 -I "$utc"
+		case $? in
+		0) ;;
+		1) timedatectl set-local-rtc 1 >/dev/null 2>&1 || return 0 ;;
+		*) return 0 ;;
+		esac
+	fi
+	mkdir -p /var/lib/tacit && touch "$done"
 }
