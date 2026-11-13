@@ -72,6 +72,10 @@ package() {
 	# Tacit's own D-Bus services: first in the user manager's XDG_DATA_DIRS (tacit-session's environment.d)
 	install -Dm644 -t "$pkgdir/usr/share/tacit/dbus-1/services" session/dbus/*.service
 	install -Dm644 -t "$pkgdir/usr/share/applications" session/applications/*.desktop
+	# pacman's hooks around a change to the shell's own files: the running shell stops watching them, and reloads once
+	# they are all in instead of at the first one (session/pacman/tacit-shell-update, services/ShellUpdate.qml)
+	install -Dm644 -t "$pkgdir/usr/share/libalpm/hooks" session/pacman/*.hook
+	install -Dm755 session/pacman/tacit-shell-update "$pkgdir/usr/share/libalpm/scripts/tacit-shell-update"
 	for m in Sand Edit; do
 		install -Dm644 -t "$pkgdir/usr/lib/qt6/qml/Tacit/$m" build-${m,,}/qml/Tacit/$m/qmldir build-${m,,}/qml/Tacit/$m/tacit${m,,}.qmltypes
 		install -Dm755 -t "$pkgdir/usr/lib/qt6/qml/Tacit/$m" build-${m,,}/qml/Tacit/$m/libtacit${m,,}.so
