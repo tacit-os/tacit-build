@@ -77,6 +77,9 @@ package() {
 	install -Dm644 updates/tacit-fetch-updates.service updates/tacit-fetch-updates-now.service updates/tacit-fetch-updates.timer updates/tacit-update@.service \
 		updates/tacit-system-update.service updates/tacit-update-night.timer -t "$pkgdir/usr/lib/systemd/system/"
 	install -Dm644 updates/80-tacit-updates.preset -t "$pkgdir/usr/lib/systemd/system-preset/"
+	# asleep on battery, Tonight's timer does not wake the computer: systemd-sleep runs tacit-update pre and post
+	install -d "$pkgdir/usr/lib/systemd/system-sleep"
+	ln -s /usr/lib/tacit/tacit-update "$pkgdir/usr/lib/systemd/system-sleep/tacit-update"
 	# NetworkManager runs the network: systemd-networkd, its wait-online and homed stay off at the first boot
 	install -Dm644 systemd/system-preset/80-tacit-network.preset -t "$pkgdir/usr/lib/systemd/system-preset/"
 	install -Dm644 systemd/system-preset/80-tacit-memory.preset -t "$pkgdir/usr/lib/systemd/system-preset/"
