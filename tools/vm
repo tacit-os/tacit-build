@@ -20,8 +20,8 @@ Runs on the cloud machine (copied there as ~/tacit-vm/vm):
   vm film <dir> <n> <s> n pictures, one every s seconds, into dir (a boot splash, a shutdown); stops early once the
                         computer is off
   vm stop               off, disk kept;           vm disk             boots the disk only (no ISO)
-  vm agent              whether the installed system's guest agent answers (qemu-guest-agent, installed once on the
-                        test image: sudo pacman -S qemu-guest-agent, then restart it)
+  vm agent              whether the installed system's guest agent answers (qemu-guest-agent, which a system installed
+                        from a tools/iso image has: udev starts it on the line this tool gives the computer)
   vm run [--stdin FILE] [--timeout S] -- CMD [ARG ...]   CMD run as root in the installed system through the agent,
                         its output printed and its exit code returned: commands without typing them
 The computer has a sound card whose sound goes nowhere (QEMU's "none" audio), so its PipeWire has a real output.

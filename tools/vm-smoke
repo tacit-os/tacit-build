@@ -2,8 +2,8 @@
 # tools/vm-smoke <version>: the release's scripted checks in the test VM, each pass or fail, recorded in
 # out/x86_64/vm-smoke-<version>, which tools/release-check requires. Run here, it drives the cloud machine
 # (cef-build-x64) as tools/iso does. There the VM must be running a disk with the release before this one installed,
-# booted with this checkout's tools/vm (vm disk: the guest agent's line and a sound card), with qemu-guest-agent installed
-# in it once. Commands reach it through that agent (vm run), not as typed keys.
+# booted with this checkout's tools/vm (vm disk: the guest agent's line and a sound card); a system installed from a
+# tools/iso image has qemu-guest-agent. Commands reach it through that agent (vm run), not as typed keys.
 #   update        the previous release updated the way Settings does (the download, Restart, the install at the next
 #                 start) from a test repo (the live database and this release's packages), over a lived-in home: its
 #                 own settings file with Loudest allowed at 99, a pin of its own and a wallpaper; after it, 99 is 100
@@ -33,9 +33,10 @@ machine() {
 	}
 	if ! vm agent; then
 		cat >&2 <<-EOF
-		vm-smoke: the test computer's guest agent does not answer. Once per test disk: start it with this checkout's
-		tools/vm (vm disk), sign in, and in a terminal there: sudo pacman -S qemu-guest-agent, then
-		sudo systemctl start qemu-guest-agent. vm agent must then say it answers, and again after a restart.
+		vm-smoke: the test computer's guest agent does not answer. Start the test disk with this checkout's tools/vm
+		(off, then vm disk: a copy from before 2026-11-12 gives the computer no line for the agent) and wait until its
+		lock screen shows. A system installed from a tools/iso image has qemu-guest-agent, and udev starts it; on a disk
+		without it: sudo pacman -S qemu-guest-agent there, then a restart. vm agent must then say it answers.
 		EOF
 		exit 1
 	fi

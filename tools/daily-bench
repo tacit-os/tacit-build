@@ -442,9 +442,9 @@ class Bench:
         if code:
             self.rec["error"] = "could not measure: the test computer's guest agent does not answer"
             self.save()
-            sys.exit("daily-bench: the test computer's guest agent does not answer. Once per test disk: start it with this "
-                     "checkout's tools/vm (vm disk), sign in, and in a terminal there: sudo pacman -S qemu-guest-agent, then "
-                     "sudo systemctl start qemu-guest-agent (tools/vm-smoke says the same).")
+            sys.exit("daily-bench: the test computer's guest agent does not answer. Start the test disk with this "
+                     "checkout's tools/vm (off, then vm disk) and wait until its lock screen shows; a system installed "
+                     "from a tools/iso image has qemu-guest-agent (tools/vm-smoke says more).")
         for name in ("daily-bench-guest", "daily-bench-suites", "vm-smoke-guest"):
             self.act("run", "--stdin", name, "--", "/bin/sh", "-c", f"mkdir -p /var/tmp/daily && cat > /var/tmp/daily/{name}")
         if (self.lang or self.lived_in) and not self.pw:
