@@ -15,7 +15,8 @@ depends=("tacit-cef=$_cef" 'qt6-base' 'qt6-declarative' 'qt6-webchannel' 'qt6-we
          'curl' 'python')
 optdepends=('hunspell-en_gb: spell check in British English'
             'hunspell-en_us: spell check in American English')
-makedepends=("tacit-cef-sdk=$_cef" 'cmake' 'ninja' 'git' 'rust' 'qt6-shadertools' 'patchelf')
+# nodejs: the ad-block lists' scriptlets are converted at build time (build())
+makedepends=("tacit-cef-sdk=$_cef" 'cmake' 'ninja' 'git' 'rust' 'qt6-shadertools' 'patchelf' 'nodejs')
 source=("git+https://github.com/ciscobugger/tacit-opsis.git#commit=f8e008894d3a14b63454023621f4732709dee101"
         'thyris' 'thyris.desktop')
 sha256sums=('SKIP' 'SKIP' 'SKIP')
@@ -33,6 +34,10 @@ build() {
 	 cmake --build cef/build --target libcef_dll_wrapper)
 	cmake -S tacit-opsis -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBROWSER_ENGINE=cef -DCEF_ROOT="$srcdir/cef"
 	cmake --build build --target browser browser-page
+	# The ad-block lists, prebuilt with Thyris (the owner, 2026-11-13): uBlock Origin's and EasyList's filters as they are
+	# today, and uBO's scriptlets converted by node (tools/update-lists). Thyris blocks with them while uBlock Origin Lite
+	# is not loaded, and gives YouTube their scriptlets beside it; an installed Tacit has no update script and no node.
+	XDG_DATA_HOME="$srcdir/adblock-lists" tacit-opsis/tools/update-lists
 }
 
 package() {
@@ -40,6 +45,9 @@ package() {
 	patchelf --set-rpath /usr/lib/tacit/cef "$pkgdir/usr/lib/tacit/thyris/browser" "$pkgdir/usr/lib/tacit/thyris/browser-page"
 	# uBlock Origin Lite, fetched by the thyris wrapper at the first start and weekly after (curl, python)
 	install -Dm755 tacit-opsis/tools/update-ubol -t "$pkgdir/usr/lib/tacit/thyris/"
+	# the lists built above, read from beside the browser while its own data has none (src/adblock.cpp)
+	install -Dm644 adblock-lists/browser/adblock/lists/*.txt -t "$pkgdir/usr/lib/tacit/thyris/adblock/lists/"
+	install -Dm644 adblock-lists/browser/adblock/resources.json -t "$pkgdir/usr/lib/tacit/thyris/adblock/"
 	install -Dm755 thyris -t "$pkgdir/usr/bin/"
 	install -Dm644 thyris.desktop -t "$pkgdir/usr/share/applications/"
 	# the notch's sign-in page: floated into the hole the shell leaves for it (the session loads tacit/browser.lua if present);
