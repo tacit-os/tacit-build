@@ -73,7 +73,12 @@ for f in */PKGBUILD; do
 		# a release made on its own branch (release-<version>) is measured against that branch, not against whatever
 		# the clone has checked out; a fix release (1.2.1) is made on its release's branch (release-1.2)
 		rb=release-$version
-		git -C "$c" rev-parse -q --verify "origin/$rb" >/dev/null || rb=release-${version%.*}
+		if ! git -C "$c" rev-parse -q --verify "origin/$rb" >/dev/null; then
+			# made here and not pushed, it is still the one: measured against release-1.2 (older than 1.2.14's pins) or the
+			# checkout instead, a pin left behind passed
+			git -C "$c" rev-parse -q --verify "refs/heads/$rb" >/dev/null && { bad "$d: $rb is not on GitHub ($c): push it first"; continue; }
+			rb=release-${version%.*}
+		fi
 		if git -C "$c" rev-parse -q --verify "origin/$rb" >/dev/null; then
 			base="origin/$rb"
 			unpushed=$(git -C "$c" rev-list --count "origin/$rb..$rb" 2>/dev/null || echo 0)
@@ -92,23 +97,51 @@ done
 
 echo "== packages: each new version built, against the day of Arch Tacit ships"
 db=/var/tmp/release-check; mkdir -p "$db"
+# an earlier run's copy is no live database: read, it skipped what the release before had published
+rm -f "$db/tacit.db.tar.zst"
 gcloud storage cp -q gs://tacit-packages-2aafc574/x86_64/tacit.db.tar.zst "$db/" >/dev/null 2>&1 || note "the live repo's database could not be read: every package is checked"
 live=$(tar -tf "$db/tacit.db.tar.zst" 2>/dev/null | sed -n 's|/$||p')
 day=$(tools/arch-day)
 # without it a package with no record of its day ("" = "") passed as built against it
 [ -n "$day" ] || bad "tools/arch-day gives no day of Arch (the mirror's wrangler.jsonc): no package can be checked against the one Tacit ships"
+# the commit that gave recipe $1 its version $2 (the newest to change its version lines, to that)
+made() {
+	local c
+	for c in $(git log --format=%H -G'^(epoch|pkgver|pkgrel)=' -- "$1/PKGBUILD"); do
+		[ "$(git show "$c:$1/PKGBUILD" | bash -c 'source /dev/stdin; echo "${epoch:+$epoch:}$pkgver-$pkgrel"' 2>/dev/null)" = "$2" ] && { echo "$c"; return; }
+	done
+}
+# the release before this one: the commit that made the live tacit, whose recipes the live packages were built from
+prev=$(made tacit "$(sed -n 's/^tacit-\([^-]*-[^-]*\)$/\1/p' <<<"$live")")
 newest=0
 for f in */PKGBUILD; do
 	d=${f%/PKGBUILD}
 	[ "$d" = tacit-device-book4-edge ] && continue      # aarch64, built on the Book4
 	v=$(cd "$d" && bash -c 'source PKGBUILD; echo "${epoch:+$epoch:}$pkgver-$pkgrel"' 2>/dev/null) || continue
-	grep -qx "$d-$v" <<<"$live" && continue             # already published: not part of this release
+	if grep -qx "$d-$v" <<<"$live"; then
+		# already published, so not part of this release, unless its recipe changed since (a pin moved, an install script
+		# fixed) with the old version: nobody would get the change. Since the release before, or the later commit that
+		# gave it this version when it was published on its own
+		since=$(made "$d" "$v")
+		[ -n "$since" ] || { bad "$d $v: published, and no commit here gives it that version"; continue; }
+		[ -n "$prev" ] && git merge-base --is-ancestor "$since" "$prev" && since=$prev
+		changed=$(git diff --name-only "$since" -- "$d" | sed "s|^$d/||" | paste -sd ' ')
+		[ -z "$changed" ] || bad "$d $v: published, and its recipe changed since ($changed): give it a new pkgrel"
+		continue
+	fi
 	p=$(ls -t $out/$d-$v-*.pkg.tar.zst 2>/dev/null | head -1)
 	[ -n "$p" ] || { bad "$d $v: not built"; continue; }
 	# the recipe is every file of its folder but what git ignores (makepkg's clones, src/, pkg/): an install script, a
-	# preset or a patch fixed after the build would ship as it was
-	newer=$(git ls-files -co --exclude-standard -- "$d" | while read -r x; do [ "$x" -nt "$p" ] && { echo "${x#"$d"/}"; break; }; done)
+	# preset or a patch fixed after the build would ship as it was. tacit/notes.json is compared by what it says instead:
+	# its "verified" is written after the VM round (the notes' gate below) and shown to nobody
+	newer=$(git ls-files -co --exclude-standard -- "$d" | while read -r x; do [ "$x" != tacit/notes.json ] && [ "$x" -nt "$p" ] && { echo "${x#"$d"/}"; break; }; done)
 	[ -z "$newer" ] || { bad "$d $v: its recipe changed after it was built ($newer)"; continue; }
+	if [ "$d" = tacit ] && ! bsdtar -xOf "$p" usr/share/tacit/notes.json 2>/dev/null | python3 -c '
+import json, sys
+said = lambda f: [{k: v for k, v in r.items() if k != "verified"} for r in json.load(f)["releases"]]
+sys.exit(0 if said(sys.stdin) == said(open("tacit/notes.json")) else 1)' 2>/dev/null; then
+		bad "$d $v: its notes changed after it was built (notes.json, beyond \"verified\")"; continue
+	fi
 	t=$(stat -c %Y "$p"); [ "$t" -gt "$newest" ] && newest=$t
 	against=$(cat "$out/$d.built-against" 2>/dev/null || echo "")
 	if [ -z "$against" ]; then bad "$d $v: no record of the Arch day it was built against"

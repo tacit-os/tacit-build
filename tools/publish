@@ -55,6 +55,10 @@ for a in "${!by_arch[@]}"; do
 		had=$(tar -tf "$dir/tacit.db.tar.zst" 2>/dev/null | sed -n "s|^$n-\([0-9][^/]*\)/$|\1|p")
 		[ -z "$had" ] || [ "$(vercmp "$v" "$had")" -ge 0 ] \
 			|| { echo "publish: ${f##*/} is older than $n $had in [tacit] $a; nothing was published for $a" >&2; exit 1; }
+		# nor another file under the same version: no computer that has it would update, and one that downloaded it
+		# already would fail its signature (RELEASE.md, step 3: a version is never reused); the same file again is fine
+		[ -z "$had" ] || [ "$(vercmp "$v" "$had")" != 0 ] || cmp -s "$f" "$dir/${f##*/}" \
+			|| { echo "publish: ${f##*/} is not the $n $had in [tacit] $a: give it a new pkgrel; nothing was published for $a" >&2; exit 1; }
 	done
 	# no exact pin between [tacit]'s own packages broken by these (tacit-thyris and tacit-cef-sdk on tacit-cef=154.0.34): a
 	# tacit-cef published without the Thyris built on it refused the whole update on every computer with Thyris. The

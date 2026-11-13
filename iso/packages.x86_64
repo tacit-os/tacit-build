@@ -39,8 +39,9 @@ parted
 gparted
 dosfstools
 e2fsprogs
-# the tools GParted needs to read, shrink and check each kind of partition: without them it showed "---" for what a
-# Btrfs or FAT partition holds and could not shrink Btrfs (CachyOS's and Fedora's own; Discord, OYINOS, 2026-11-12)
+# the tools GParted needs to read and check each kind of partition, and to shrink Btrfs and FAT ones (it can't shrink
+# exFAT, XFS or F2FS): without them it showed "---" for what a Btrfs or FAT partition holds and could not shrink Btrfs
+# (CachyOS's and Fedora's own; Discord, OYINOS, 2026-11-12)
 btrfs-progs
 mtools
 exfatprogs
