@@ -2,6 +2,16 @@
 # Tacit's live system only (the installer removes it): the live user "tacit", no password, able to run the installer;
 # its session opens Setup first (a custom/execs.lua of its own, after Tacit's).
 set -eu
+# an NVIDIA card older than Turing (PCI device below 0x1e00, a GTX 900 or 10 series), and none newer, gets nouveau:
+# nvidia-open cannot drive it and nvidia-utils blacklists nouveau, which can, so the stick started on the firmware's
+# framebuffer; a module asked for by name loads all the same (the installer leaves NVIDIA's driver out there, and
+# nouveau loads by itself)
+old=0 new=0
+for d in /sys/bus/pci/devices/*; do
+	[ "$(cat "$d/vendor" 2>/dev/null)" = 0x10de ] && [[ $(cat "$d/class" 2>/dev/null) == 0x03* ]] || continue
+	if (( $(cat "$d/device" 2>/dev/null || echo 0x1e00) < 0x1e00 )); then old=1; else new=1; fi
+done
+[ "$old$new" = 10 ] && { modprobe nouveau || true; }
 id tacit >/dev/null 2>&1 && exit 0
 useradd -m -G wheel,video,audio,input,network -s /usr/bin/fish tacit
 passwd -d tacit >/dev/null

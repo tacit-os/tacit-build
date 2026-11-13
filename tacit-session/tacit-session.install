@@ -39,11 +39,23 @@ Server = https://fastly.mirror.pkgbuild.com/$repo/os/$arch'
 # An NVIDIA display card: its video memory kept across sleep, by NVIDIA's own suspend services (NVIDIA's and the Arch
 # wiki's setup). Off, sleep lost what the card held and Hyprland could die on waking (an RTX 4050 laptop, Discord
 # 2026-10-20: both services disabled). A computer without the card, or without the driver, is left alone.
+# A card older than Turing (PCI device below 0x1e00, a GTX 900 or 10 series) is nouveau's: nvidia-open cannot drive it
+# and nvidia-utils' /usr/lib/modprobe.d/nvidia-utils.conf blacklists nouveau, so where no card was newer the screen had
+# only the firmware's framebuffer. A file of that name in /etc/modprobe.d replaces it without the blacklist from the
+# next start (Setup now leaves NVIDIA's driver out there); it goes again once a newer card is in.
 _nvidia() {
-	local d card=0
+	local d card=0 old=0 o=/etc/modprobe.d/nvidia-utils.conf
 	for d in /sys/bus/pci/devices/*; do
-		[ "$(cat "$d/vendor" 2>/dev/null)" = 0x10de ] && case "$(cat "$d/class" 2>/dev/null)" in 0x03*) card=1 ;; esac
+		[ "$(cat "$d/vendor" 2>/dev/null)" = 0x10de ] && case "$(cat "$d/class" 2>/dev/null)" in
+			0x03*) if (( $(cat "$d/device" 2>/dev/null || echo 0x1e00) >= 0x1e00 )); then card=1; else old=1; fi ;;
+		esac
 	done
+	if [ "$old" = 1 ] && [ "$card" = 0 ] && [ -e /usr/lib/modprobe.d/nvidia-utils.conf ] && [ ! -e "$o" ]; then
+		printf '%s\n' "# Tacit (tacit-session): nvidia-utils' file of this name less its \"blacklist nouveau\": this computer's" \
+			"# NVIDIA card is older than Turing, which nvidia-open cannot drive and nouveau can" > "$o"
+	elif [ "$card" = 1 ] && grep -q '^# Tacit (tacit-session)' "$o" 2>/dev/null; then
+		rm -f "$o"
+	fi
 	[ "$card" = 1 ] && [ -e /usr/lib/systemd/system/nvidia-suspend.service ] || return 0
 	# done before (by an earlier upgrade or by Setup): the person's own choice since then stands
 	local conf=/etc/modprobe.d/tacit-nvidia-sleep.conf

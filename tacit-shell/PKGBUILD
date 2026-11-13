@@ -8,8 +8,12 @@ pkgdesc="Tacit: the shell and its apps"
 arch=('aarch64' 'x86_64')
 url="https://github.com/ciscobugger/tacit-shell"
 license=('GPL-3.0-or-later')
+# The colour helpers' environment (below) holds modules for one Python (lib/python3.14, and its .pyc files): pin that
+# minor version, so Python only moves when this package is rebuilt with it (tools/arch-day checks the day)
+_pyminor=$(python -c 'import sys; print(sys.version_info[1])' 2>/dev/null)
 depends=('quickshell' 'qt6-declarative' 'qt6-5compat' 'qt6-positioning' 'syntax-highlighting' 'kirigami'
-         'hyprland' 'hyprlock' 'jq' 'libnotify' 'wl-clipboard' 'grim' 'python' 'matugen' 'brightnessctl'
+         'hyprland' 'hyprlock' 'jq' 'libnotify' 'wl-clipboard' 'grim' 'matugen' 'brightnessctl'
+         "python>=3.${_pyminor:-0}" "python<3.$((${_pyminor:-0} + 1))"
          'networkmanager' 'bluez-utils' 'wireplumber' 'cliphist' 'foot' 'xdg-utils' 'glib2' 'git' 'curl'
          # live wallpapers (scripts/colors/switchwall.sh); mpvpaper is carried in this repo, Arch has it only in the AUR
          'mpvpaper' 'mpv'
@@ -18,6 +22,9 @@ depends=('quickshell' 'qt6-declarative' 'qt6-5compat' 'qt6-positioning' 'syntax-
          'bubblewrap' 'xdg-dbus-proxy' 'xdg-user-dirs' 'desktop-file-utils'
          # Apps' catalogue: names, words, icons and screenshot links (without it the store showed bare package names)
          'archlinux-appstream-data'
+         # the Viewer: PDFs (QtQuick.Pdf, which Arch ships in qt6-webengine), videos and sound (QtMultimedia, with Qt's
+         # FFmpeg backend), a picture's facts (exiv2) and the pages of a PDF PDFium refuses (poppler's pdftoppm)
+         'qt6-webengine' 'qt6-multimedia' 'qt6-multimedia-ffmpeg' 'exiv2' 'poppler'
          # the colour helpers' environment (below) uses these from the system, as does the screen translator's Google
          # sign-in (services/gCloud/token_from_key.py: google-auth, and requests for its token request)
          'python-gobject' 'python-dbus' 'python-numpy' 'python-pillow' 'python-google-auth' 'python-requests')

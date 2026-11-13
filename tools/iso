@@ -102,8 +102,11 @@ tar -C "$repo" -cf "$tmp/repo.tar" .
 on() { timeout 600 gcloud compute ssh $vm "${at[@]}" --command "$1"; }
 on "sudo rm -rf ~/tacit-iso && mkdir -p ~/tacit-iso/work/repo"
 gcloud compute scp "${at[@]}" "$tmp/iso.tar" "$tmp/repo.tar" $vm:~/tacit-iso/ >/dev/null
+# ARCH_MIRROR goes through two shells there (the login shell, then bash -c): its $repo and $arch reach pacman as they
+# are, not as two empty variables (a candidate day's Server line was .../2026/11/04//os/ and nothing built)
+mirror=${ARCH_MIRROR:-}; mirror=${mirror//\$/\\\$}
 on "cd ~/tacit-iso && tar -xf iso.tar -C work && tar -xf repo.tar -C work/repo \
-    && (setsid nohup bash -c 'sudo docker run --rm --privileged --network=host -e HOSTUID=\$(id -u) -e ARCH_MIRROR=${ARCH_MIRROR:-} -v \$HOME/tacit-iso/work:/work archlinux:latest bash /work/inside.sh > \$HOME/tacit-iso/run.log 2>&1; echo \$? > \$HOME/tacit-iso/done' > /dev/null 2>&1 < /dev/null &)"
+    && (setsid nohup bash -c 'sudo docker run --rm --privileged --network=host -e HOSTUID=\$(id -u) -e ARCH_MIRROR=$mirror -v \$HOME/tacit-iso/work:/work archlinux:latest bash /work/inside.sh > \$HOME/tacit-iso/run.log 2>&1; echo \$? > \$HOME/tacit-iso/done' > /dev/null 2>&1 < /dev/null &)"
 until on "test -f ~/tacit-iso/done" 2>/dev/null; do sleep 60; done
 on "cat ~/tacit-iso/run.log"
 status=$(on "cat ~/tacit-iso/done")

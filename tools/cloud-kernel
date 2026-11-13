@@ -12,7 +12,7 @@ cd "$(dirname "$(readlink -f "$0")")/.."
 G=("$GCLOUD" --project "$CLOUD_PROJECT")
 PORT=${PORT:-$HOME/book4-edge/release-repo}
 BASE_REPO=https://github.com/zensanp/linux-book4-edge.git
-BASE_COMMIT=2685c75587ff                       # README of the port repo; patches/ apply on top
+BASE_COMMIT=2685c75587ffb6478293f10ebcff46c7272cc721   # the port repo's README (2685c75587ff), in full: git fetch takes no short id; patches/ apply on top
 OUT=out/kernel; mkdir -p "$OUT"
 
 state=$("${G[@]}" compute instances describe "$CLOUD_VM" --zone "$CLOUD_ZONE" --format='value(status)')

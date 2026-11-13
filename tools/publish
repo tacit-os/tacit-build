@@ -35,13 +35,22 @@ for a in "${!by_arch[@]}"; do
 	if grep -qx "$bucket/$a/" <<<"$held"; then
 		gcloud storage rsync -q "$bucket/$a" "$dir" || { echo "publish: $bucket/$a could not be copied; nothing was published for $a" >&2; exit 1; }
 	fi
+	# never back: a file older than the version the database names (an old build named by mistake, a glob that sorts
+	# -100 before -77) would take its place, below what tacit pins, and every update would stop; -p below keeps the
+	# newest of several given at once
+	for f in ${by_arch[$a]}; do
+		n=$(bsdtar -xOf "$f" .PKGINFO | sed -n 's/^pkgname = //p'); v=$(bsdtar -xOf "$f" .PKGINFO | sed -n 's/^pkgver = //p')
+		had=$(tar -tf "$dir/tacit.db.tar.zst" 2>/dev/null | sed -n "s|^$n-\([0-9][^/]*\)/$|\1|p")
+		[ -z "$had" ] || [ "$(vercmp "$v" "$had")" -ge 0 ] \
+			|| { echo "publish: ${f##*/} is older than $n $had in [tacit] $a; nothing was published for $a" >&2; exit 1; }
+	done
 	new=()
 	for f in ${by_arch[$a]}; do
 		cp -f "$f" "$dir/"
 		gpg --batch --yes --detach-sign --no-armor -u "$GPGKEY" -o "$dir/$(basename "$f").sig" "$dir/$(basename "$f")"
 		new+=("$dir/$(basename "$f")")
 	done
-	repo-add -q --sign --key "$GPGKEY" --verify "$dir/tacit.db.tar.zst" "${new[@]}"
+	repo-add -q -p --sign --key "$GPGKEY" --verify "$dir/tacit.db.tar.zst" "${new[@]}"
 	# the bucket has no links: the names pacman asks for as files
 	for n in tacit.db tacit.files tacit.db.sig tacit.files.sig; do
 		[ -L "$dir/$n" ] && cp --remove-destination "$(readlink -f "$dir/$n")" "$dir/$n"

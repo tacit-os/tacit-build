@@ -4,7 +4,8 @@
 #                                is tried with ARCH_MIRROR=https://archive.archlinux.org/repos/YYYY/MM/DD/\$repo/os/\$arch
 #                                (tools/cloud-packages, tools/iso, and the test VM's mirror list)
 # tools/arch-day --check [YYYY/MM/DD]   whether that day (default: the one now) has the Hyprland that tacit-boot and
-#                                tacit-portal, as published, are built for; moving the day runs this first
+#                                tacit-portal, and the Python that tacit-shell, as published, are built for; moving the
+#                                day runs this first
 set -eu
 conf=$HOME/dev/tacit-site/mirror/wrangler.jsonc
 now=$(sed -n 's/.*"DATE": "\([0-9/]*\)".*/\1/p' "$conf")
@@ -13,8 +14,9 @@ db=${TACIT_REPO_MIRROR:-$HOME/.cache/tacit-repo}/x86_64/tacit.db
 # tacit-boot and tacit-portal carry plugins built for one Hyprland and pin it ("hyprland=0.57.0"), so a day of Arch with
 # another Hyprland makes every update refuse with a dependency error, and a person who holds Hyprland back to get past
 # it is left with a half-updated desktop. The day moves only to one whose Hyprland is the one the published plugins pin.
+# tacit-shell's colour helpers' environment holds modules for one Python and pins its minor version the same way.
 check() {
-	local day=$1 f hypr pin p bad=0
+	local day=$1 f hypr py pin p bad=0
 	f=$(mktemp)
 	curl -sf -o "$f" "https://archive.archlinux.org/repos/$day/extra/os/x86_64/extra.db" \
 		|| { rm -f "$f"; echo "arch-day: Arch's archive has no extra repository for $day" >&2; return 1; }
@@ -28,11 +30,21 @@ check() {
 		echo "arch-day: Arch's $day has Hyprland $hypr, but $p in [tacit] is built for ${pin:-none}: rebuild and publish tacit-boot and tacit-portal on that day first (RELEASE.md, step 2)" >&2
 		bad=1
 	done
+	f=$(mktemp)
+	curl -sf -o "$f" "https://archive.archlinux.org/repos/$day/core/os/x86_64/core.db" \
+		|| { rm -f "$f"; echo "arch-day: Arch's archive has no core repository for $day" >&2; return 1; }
+	py=$(bsdtar -tf "$f" | sed -n 's|^python-\([0-9]*\.[0-9]*\)\.[^/]*/$|\1|p')
+	rm -f "$f"
+	pin=$(bsdtar -xOf "$db" --include 'tacit-shell-[0-9]*/desc' | awk '/^%DEPENDS%$/ { in_deps = 1; next } /^$/ { in_deps = 0 } in_deps && /^python>=/ { sub(/^python>=/, ""); print }')
+	if [ "$pin" != "$py" ]; then
+		echo "arch-day: Arch's $day has Python ${py:-none}, but tacit-shell in [tacit] is built for ${pin:-an unpinned one}: rebuild and publish tacit-shell on that day first" >&2
+		bad=1
+	fi
 	return "$bad"
 }
 if [ "${1:-}" = --check ]; then
 	day=${2:-$now}
-	check "$day" && echo "arch-day: $day has the Hyprland tacit-boot and tacit-portal are built for"
+	check "$day" && echo "arch-day: $day has the Hyprland tacit-boot and tacit-portal and the Python tacit-shell are built for"
 	exit
 fi
 [ $# -eq 0 ] && { echo "$now"; exit 0; }
