@@ -7,7 +7,8 @@ pkgdesc="Video wallpaper program for wlroots based Wayland compositors"
 arch=('aarch64' 'x86_64')
 url="https://github.com/GhostNaN/mpvpaper"
 license=('GPL-3.0-only')
-depends=('mpv' 'wayland')
+# libmpv.so: the soname it is linked with (libmpv.so=2-64), so an mpv with another one waits for a rebuild of this
+depends=('mpv' 'libmpv.so' 'wayland')
 makedepends=('git' 'meson' 'ninja' 'wayland-protocols')
 source=("git+https://github.com/GhostNaN/mpvpaper.git#tag=$pkgver")
 sha256sums=('SKIP')

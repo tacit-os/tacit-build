@@ -1,8 +1,8 @@
 #!/bin/bash
-# tools/take-pr <tacit|thyris|tacit-build> <number>: a pull request on one of Tacit's public repos, onto the review branch
-# pr/<repo>-<number> of the private repo it is published from. Its commits keep their author and message and get a
-# "Public-PR: <owner>/<repo>#<number>" line; tools/publish-source publishes them under the contributor's name and then
-# closes the pull request with links to them (CONTRIBUTING.md, in tools/public/common).
+# tools/take-pr <tacit|thyris|tacit-build|tacit-kit|tacit-music-example> <number>: a pull request on one of Tacit's public
+# repos, onto the review branch pr/<repo>-<number> of the private repo it is published from. Its commits keep their
+# author and message and get a "Public-PR: <owner>/<repo>#<number>" line; tools/publish-source publishes them under the
+# contributor's name and then closes the pull request with links to them (CONTRIBUTING.md, in tools/public/common).
 #
 # It refuses a commit without its author's sign-off (the DCO) and a change to the files only the public repos have
 # (README, CONTRIBUTING, AGENTS, CLAUDE, LICENSE, .github, docs): those come from tools/public. Nothing is merged and the
@@ -12,11 +12,13 @@
 # Never merge a pull request on GitHub: the next publish rebuilds the public repo from the private one and it is lost.
 set -eu
 repo=${1:-} n=${2:-}
-[ -n "$repo" ] && [ -n "$n" ] || { echo "usage: tools/take-pr <tacit|thyris|tacit-build> <number>" >&2; exit 2; }
+[ -n "$repo" ] && [ -n "$n" ] || { echo "usage: tools/take-pr <tacit|thyris|tacit-build|tacit-kit|tacit-music-example> <number>" >&2; exit 2; }
 case $repo in
     tacit) src=$HOME/.config/quickshell/tacit ;;
     thyris) src=$HOME/dev/browser ;;
     tacit-build) src=$HOME/dev/tacit-packages ;;
+    tacit-kit) src=$HOME/dev/tacit-kit ;;
+    tacit-music-example) src=$HOME/dev/tacit-music-example ;;
     boot) src=$HOME/book4-edge/martida-boot ;;
     portal) src=$HOME/dev/tacit-portal ;;
     agent-host) src=$HOME/dev/agent-host ;;

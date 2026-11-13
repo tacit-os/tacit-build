@@ -44,8 +44,9 @@ sed -i 's/^iso_name=.*/iso_name="tacit"/; s/^iso_label=.*/iso_label="TACIT_$(dat
 # assignment, not just its first line, and add our own.
 sed -i "/^bootmodes=(/,/)/d" "$p/profiledef.sh"
 printf '%s\n' "bootmodes=('bios.syslinux' 'uefi.grub')" >> "$p/profiledef.sh"
-# the stick's boot menu says Tacit, not Arch Linux, and is not shown: the stick starts Tacit at once (Esc or Shift
-# while it starts still opens it, GRUB's hidden style)
+# the stick's boot menu says Tacit, not Arch Linux, and is not shown: the stick starts Tacit at once. GRUB's hidden style
+# with no timeout looks for a key once, so only F4 pressed over and over from the firmware's logo opens it (in the VM,
+# 2026-11-12: Shift was not seen, Esc opened the firmware's own menu)
 sed -i 's/Arch Linux/Tacit/g' $p/grub/*.cfg $p/efiboot/loader/entries/*.conf $p/syslinux/*.cfg 2>/dev/null || true
 # (the baseline writes "timeout=15" without "set", so a pattern that wanted "set" never matched: the 1.2.7 stick
 # counted down from 15 under GRUB's own menu)
@@ -57,6 +58,10 @@ QUIET="quiet loglevel=3 rd.udev.log_level=3 systemd.show_status=false vt.global_
 # 5 GB free, a minute or more of black screen with one progress line before Try Tacit (Discord, 2026-11-12). Run from
 # the stick, its boot files stay mounted, so Setup and tacit-install know which disk is the stick again.
 QUIET="$QUIET copytoram=n"
+# and room for what it writes (the live home, Thyris's profile and cache, /var): archiso keeps that on a RAM disk of
+# cow_spacesize, 256 MB unless set, and writes failed once it was full however much memory was free; 1 GB, taken only as
+# it is used
+QUIET="$QUIET cow_spacesize=1G"
 sed -i -E "s|^(\s*linux\s+.*vmlinuz-linux.*)$|\1 $QUIET|" $p/grub/*.cfg 2>/dev/null || true
 sed -i -E "s|^(\s*APPEND\s+.*archisobasedir.*)$|\1 $QUIET|" $p/syslinux/*.cfg 2>/dev/null || true
 sed -i -E "s|^(options\s+.*archisobasedir.*)$|\1 $QUIET|" $p/efiboot/loader/entries/*.conf 2>/dev/null || true

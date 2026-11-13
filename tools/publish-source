@@ -21,7 +21,7 @@ public=$(dirname "$(readlink -f "$0")")/public
 state=$HOME/.config/tacit-packages/public-sources
 # in pieces, so this file passes its own check
 owner_mail="xizko""55" project="himilo""-hoy"
-keys='AIza[0-9A-Za-z_-]{35}|sk-(ant-)?[A-Za-z0-9_-]{32,}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{40,}|xox[bpas]-[A-Za-z0-9-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----'
+keys='AIza[0-9A-Za-z_-]{35}|sk-(ant-)?[A-Za-z0-9_-]{32,}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{40,}|xox[bpas]-[A-Za-z0-9-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY( BLOCK)?-----'
 
 # the work tree $1 as private commit $3 of repo $2 has it, made public
 fill() {

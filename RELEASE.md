@@ -55,8 +55,9 @@ Owner, 2026-10-25: the numbers follow how a release reaches people, not how many
 2. **Pick the day of Arch.** `tools/arch-day` is what installs have now. A newer day is a candidate: build and test
    with `ARCH_MIRROR=https://archive.archlinux.org/repos/YYYY/MM/DD/$repo/os/$arch`. A day with another Hyprland needs
    tacit-boot and tacit-portal rebuilt on it (their plugins are built for one Hyprland and pin it), and one with another
-   Python (3.14 to 3.15) needs tacit-shell rebuilt (its colour helpers' environment pins it), or updates refuse;
-   `tools/arch-day <day>` refuses a day whose Hyprland or Python is not the one the published packages pin.
+   Python (3.14 to 3.15) needs tacit-shell rebuilt (its colour helpers' environment pins it), and one with another Qt
+   needs tacit-qt6-declarative and quickshell rebuilt, or updates refuse; `tools/arch-day <day>` refuses a day without
+   a version the published packages pin (Hyprland, Python, Qt, a library's soname).
 3. **Pin.** Each PKGBUILD names the pushed commit or tag it ships; a version that changed gets a new `pkgver` or
    `pkgrel` (never reuse one, even unpublished: a test computer's cache keeps the old file). `tacit/notes.json` leads
    with the release and what changed in it; `tacit` depends on the new versions it needs.

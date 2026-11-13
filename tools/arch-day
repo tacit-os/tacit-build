@@ -4,8 +4,8 @@
 #                                is tried with ARCH_MIRROR=https://archive.archlinux.org/repos/YYYY/MM/DD/\$repo/os/\$arch
 #                                (tools/cloud-packages, tools/iso, and the test VM's mirror list)
 # tools/arch-day --check [YYYY/MM/DD]   whether that day (default: the one now) has the Hyprland that tacit-boot and
-#                                tacit-portal, and the Python that tacit-shell, as published, are built for; moving the
-#                                day runs this first
+#                                tacit-portal, the Python that tacit-shell, and every other version of Arch's that the
+#                                packages in [tacit], as published, are built for; moving the day runs this first
 set -eu
 conf=$HOME/dev/tacit-site/mirror/wrangler.jsonc
 now=$(sed -n 's/.*"DATE": "\([0-9/]*\)".*/\1/p' "$conf")
@@ -16,12 +16,11 @@ db=${TACIT_REPO_MIRROR:-$HOME/.cache/tacit-repo}/x86_64/tacit.db
 # it is left with a half-updated desktop. The day moves only to one whose Hyprland is the one the published plugins pin.
 # tacit-shell's colour helpers' environment holds modules for one Python and pins its minor version the same way.
 check() {
-	local day=$1 f hypr py pin p bad=0
-	f=$(mktemp)
-	curl -sf -o "$f" "https://archive.archlinux.org/repos/$day/extra/os/x86_64/extra.db" \
-		|| { rm -f "$f"; echo "arch-day: Arch's archive has no extra repository for $day" >&2; return 1; }
-	hypr=$(bsdtar -tf "$f" | sed -n 's|^hyprland-\([0-9][^/]*\)-[^-/]*/$|\1|p')
-	rm -f "$f"
+	local day=$1 hypr py pin p bad=0
+	x=$(mktemp) c=$(mktemp); trap 'rm -f "$x" "$c"' EXIT
+	curl -sf -o "$x" "https://archive.archlinux.org/repos/$day/extra/os/x86_64/extra.db" \
+		|| { echo "arch-day: Arch's archive has no extra repository for $day" >&2; return 1; }
+	hypr=$(bsdtar -tf "$x" | sed -n 's|^hyprland-\([0-9][^/]*\)-[^-/]*/$|\1|p')
 	[ -n "$hypr" ] || { echo "arch-day: Arch's $day has no Hyprland" >&2; return 1; }
 	[ -f "$db" ] || { echo "arch-day: no published repo in ${db%/x86_64/tacit.db} to read the plugins' Hyprland from (tools/publish first)" >&2; return 1; }
 	for p in tacit-boot tacit-portal; do
@@ -30,21 +29,36 @@ check() {
 		echo "arch-day: Arch's $day has Hyprland $hypr, but $p in [tacit] is built for ${pin:-none}: rebuild and publish tacit-boot and tacit-portal on that day first (RELEASE.md, step 2)" >&2
 		bad=1
 	done
-	f=$(mktemp)
-	curl -sf -o "$f" "https://archive.archlinux.org/repos/$day/core/os/x86_64/core.db" \
-		|| { rm -f "$f"; echo "arch-day: Arch's archive has no core repository for $day" >&2; return 1; }
-	py=$(bsdtar -tf "$f" | sed -n 's|^python-\([0-9]*\.[0-9]*\)\.[^/]*/$|\1|p')
-	rm -f "$f"
+	curl -sf -o "$c" "https://archive.archlinux.org/repos/$day/core/os/x86_64/core.db" \
+		|| { echo "arch-day: Arch's archive has no core repository for $day" >&2; return 1; }
+	py=$(bsdtar -tf "$c" | sed -n 's|^python-\([0-9]*\.[0-9]*\)\.[^/]*/$|\1|p')
 	pin=$(bsdtar -xOf "$db" --include 'tacit-shell-[0-9]*/desc' | awk '/^%DEPENDS%$/ { in_deps = 1; next } /^$/ { in_deps = 0 } in_deps && /^python>=/ { sub(/^python>=/, ""); print }')
 	if [ "$pin" != "$py" ]; then
 		echo "arch-day: Arch's $day has Python ${py:-none}, but tacit-shell in [tacit] is built for ${pin:-an unpinned one}: rebuild and publish tacit-shell on that day first" >&2
 		bad=1
 	fi
+	# Every other exact pin a package in [tacit] has on one of Arch's: tacit-qt6-declarative's Qt (qt6-base=6.12.0), and
+	# the sonames makepkg records for the libraries a binary links (libfcft.so=4-64 for tacit-foot). A day without one
+	# refuses every update the same way. Arch's side: each package's name=version, with and without its pkgrel (as pacman
+	# matches a pin without one), and what it provides; a pin on [tacit]'s own packages is not Arch's to meet.
+	while IFS=$'\t' read -r pin p; do
+		echo "arch-day: Arch's $day has no $pin, which $p in [tacit] is built for: rebuild and publish it on that day first (RELEASE.md, step 2)" >&2
+		bad=1
+	done < <({ bsdtar -xOf "$x" --include '*/desc'; bsdtar -xOf "$c" --include '*/desc'; echo %TACIT%; bsdtar -xOf "$db" --include '*/desc'; } | awk '
+		/^%TACIT%$/ { ours = 1; next }
+		/^%[A-Z0-9]+%$/ { k = $0; next }
+		/^$/ { k = ""; next }
+		k == "%NAME%" { n = $0; if (ours) own[n] = 1 }
+		k == "%VERSION%" && !ours { has[n "=" $0] = 1; sub(/-[^-]*$/, ""); has[n "=" $0] = 1 }
+		k == "%PROVIDES%" && ours { sub(/[<>=].*/, ""); own[$0] = 1 }
+		k == "%PROVIDES%" && !ours { has[$0] = 1; if (/=/) { sub(/-[^-]*$/, ""); has[$0] = 1 } }
+		k == "%DEPENDS%" && ours && /^[^<>=]+=[^=]/ { need[$0] = (need[$0] ? need[$0] ", " : "") n }
+		END { for (d in need) { m = d; sub(/=.*/, "", m); if (m != "hyprland" && !(m in own) && !(d in has)) print d "\t" need[d] } }')
 	return "$bad"
 }
 if [ "${1:-}" = --check ]; then
 	day=${2:-$now}
-	check "$day" && echo "arch-day: $day has the Hyprland tacit-boot and tacit-portal and the Python tacit-shell are built for"
+	check "$day" && echo "arch-day: $day has the Hyprland tacit-boot and tacit-portal and the Python tacit-shell are built for, and every other version [tacit] pins"
 	exit
 fi
 [ $# -eq 0 ] && { echo "$now"; exit 0; }
@@ -54,4 +68,12 @@ day=$1
 curl -sfI "https://archive.archlinux.org/repos/$day/core/os/x86_64/core.db" >/dev/null || { echo "arch-day: Arch's archive has no $day" >&2; exit 1; }
 check "$day" || exit 1
 sed -i "s|\"DATE\": \"$now\"|\"DATE\": \"$day\"|" "$conf"
-(cd "$(dirname "$conf")" && npx --yes wrangler@4 deploy >/dev/null) && echo "Tacit's computers update to Arch as of $day (was $now)"
+# the file says the new day only once the mirror serves it: left so after a failed deploy (signed out, offline), this
+# tool, release-check and cloud-packages took it as shipped while computers stayed on the old one, and a second try was
+# refused as not after it
+if ! (cd "$(dirname "$conf")" && npx --yes wrangler@4 deploy >/dev/null); then
+	sed -i "s|\"DATE\": \"$day\"|\"DATE\": \"$now\"|" "$conf"
+	echo "arch-day: the mirror's deploy failed; Tacit's computers stay on $now" >&2
+	exit 1
+fi
+echo "Tacit's computers update to Arch as of $day (was $now)"

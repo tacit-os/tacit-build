@@ -8,7 +8,9 @@ pkgdesc="Tacit: the foot terminal with Tacit's text"
 arch=('aarch64' 'x86_64')
 url="https://github.com/ciscobugger/tacit-foot"
 license=('MIT')
-depends=('fcft' 'fontconfig' 'libxkbcommon' 'pixman' 'libutf8proc' 'wayland' 'foot-terminfo')
+# libfcft.so: makepkg records the soname foot is linked with (libfcft.so=4-64, as Arch's foot does), so pacman holds
+# back an fcft with another one until this is rebuilt, rather than the terminal failing to start
+depends=('fcft' 'libfcft.so' 'fontconfig' 'libxkbcommon' 'pixman' 'libutf8proc' 'wayland' 'foot-terminfo')
 makedepends=('git' 'meson' 'ninja' 'scdoc' 'tllist' 'wayland-protocols')
 provides=("foot=$_footver")
 conflicts=('foot')

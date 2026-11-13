@@ -95,6 +95,8 @@ db=/var/tmp/release-check; mkdir -p "$db"
 gcloud storage cp -q gs://tacit-packages-2aafc574/x86_64/tacit.db.tar.zst "$db/" >/dev/null 2>&1 || note "the live repo's database could not be read: every package is checked"
 live=$(tar -tf "$db/tacit.db.tar.zst" 2>/dev/null | sed -n 's|/$||p')
 day=$(tools/arch-day)
+# without it a package with no record of its day ("" = "") passed as built against it
+[ -n "$day" ] || bad "tools/arch-day gives no day of Arch (the mirror's wrangler.jsonc): no package can be checked against the one Tacit ships"
 newest=0
 for f in */PKGBUILD; do
 	d=${f%/PKGBUILD}
@@ -103,11 +105,16 @@ for f in */PKGBUILD; do
 	grep -qx "$d-$v" <<<"$live" && continue             # already published: not part of this release
 	p=$(ls -t $out/$d-$v-*.pkg.tar.zst 2>/dev/null | head -1)
 	[ -n "$p" ] || { bad "$d $v: not built"; continue; }
-	[ "$p" -nt "$f" ] || { bad "$d $v: its recipe changed after it was built"; continue; }
+	# the recipe is every file of its folder but what git ignores (makepkg's clones, src/, pkg/): an install script, a
+	# preset or a patch fixed after the build would ship as it was
+	newer=$(git ls-files -co --exclude-standard -- "$d" | while read -r x; do [ "$x" -nt "$p" ] && { echo "${x#"$d"/}"; break; }; done)
+	[ -z "$newer" ] || { bad "$d $v: its recipe changed after it was built ($newer)"; continue; }
 	t=$(stat -c %Y "$p"); [ "$t" -gt "$newest" ] && newest=$t
 	against=$(cat "$out/$d.built-against" 2>/dev/null || echo "")
-	if [ "$against" = "$day" ]; then ok "$d $v, against Arch $day"
-	elif [ -z "$against" ]; then bad "$d $v: no record of the Arch day it was built against"
+	if [ -z "$against" ]; then bad "$d $v: no record of the Arch day it was built against"
+	elif [ "$against" = "$day" ]; then ok "$d $v, against Arch $day"
+	# an older day is no candidate: tacit-boot and tacit-portal built on it pin its Hyprland, which the day shipped may not have
+	elif [[ "$against" < "$day" ]]; then bad "$d $v: built against $against, before the day Tacit ships ($day): build it again on $day"
 	else note "$d $v: built against $against, Tacit ships $day (a candidate day: move it with tools/arch-day after the VM)"; fi
 done
 

@@ -15,6 +15,18 @@ export GPGKEY=$(cat "$HOME/.config/tacit-packages/signing-key")
 here=$(dirname "$(dirname "$(readlink -f "$0")")")
 release=$(cd "$here/tacit" && bash -c 'source PKGBUILD; echo "$pkgver"')
 "$here/tools/release-check" "$release" || { echo "publish: tools/release-check $release did not pass; nothing was published" >&2; exit 1; }
+# the exact pins (name=version) a package in the repo database $1 has on another of its packages, or on what one
+# provides, that none there meets, each as "<pin>, which <packages> need"
+unmet() {
+	bsdtar -xOf "$1" --include '*/desc' 2>/dev/null | awk '
+		/^%[A-Z0-9]+%$/ { k = $0; next }
+		/^$/ { k = ""; next }
+		k == "%NAME%" { n = $0; own[n] = 1 }
+		k == "%VERSION%" { has[n "=" $0] = 1; v = $0; sub(/-[^-]*$/, "", v); has[n "=" v] = 1 }
+		k == "%PROVIDES%" { has[$0] = 1; p = $0; sub(/[<>=].*/, "", p); own[p] = 1 }
+		k == "%DEPENDS%" && /^[^<>=]+=[^=]/ { need[$0] = (need[$0] ? need[$0] " and " : "") n; c[$0]++ }
+		END { for (d in need) { m = d; sub(/=.*/, "", m); if ((m in own) && !(d in has)) print d ", which " need[d] (c[d] > 1 ? " need" : " needs") } }' | sort
+}
 declare -A by_arch
 for f in "$@"; do
 	[ -f "$f" ] || { echo "publish: no file $f" >&2; exit 1; }
@@ -44,6 +56,15 @@ for a in "${!by_arch[@]}"; do
 		[ -z "$had" ] || [ "$(vercmp "$v" "$had")" -ge 0 ] \
 			|| { echo "publish: ${f##*/} is older than $n $had in [tacit] $a; nothing was published for $a" >&2; exit 1; }
 	done
+	# no exact pin between [tacit]'s own packages broken by these (tacit-thyris and tacit-cef-sdk on tacit-cef=154.0.34): a
+	# tacit-cef published without the Thyris built on it refused the whole update on every computer with Thyris. The
+	# database these would make, in a copy, against the one there now
+	t=$(mktemp -d)
+	[ ! -f "$dir/tacit.db.tar.zst" ] || cp "$dir/tacit.db.tar.zst" "$t/"
+	repo-add -q -p "$t/tacit.db.tar.zst" ${by_arch[$a]} >/dev/null
+	broken=$(comm -13 <(unmet "$dir/tacit.db.tar.zst") <(unmet "$t/tacit.db.tar.zst"))
+	rm -rf "$t"
+	[ -z "$broken" ] || { echo "publish: [tacit] $a would then lack ${broken//$'\n'/; }: publish them together; nothing was published for $a" >&2; exit 1; }
 	new=()
 	for f in ${by_arch[$a]}; do
 		cp -f "$f" "$dir/"
@@ -55,6 +76,9 @@ for a in "${!by_arch[@]}"; do
 	for n in tacit.db tacit.files tacit.db.sig tacit.files.sig; do
 		[ -L "$dir/$n" ] && cp --remove-destination "$(readlink -f "$dir/$n")" "$dir/$n"
 	done
+	# the packages and their signatures first, then the database that names them: sent together, in no set order, the
+	# small database could land first, and a computer checking for updates meanwhile failed to retrieve a package
+	gcloud storage rsync -q --exclude '^tacit\.(db|files)' "$dir" "$bucket/$a"
 	gcloud storage rsync -q "$dir" "$bucket/$a"
 	echo "[tacit] $a: $(printf '%s ' "${new[@]##*/}")"
 done

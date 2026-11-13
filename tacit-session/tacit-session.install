@@ -1,7 +1,7 @@
 # Tacit's updates on (session/updates: the background download, the install while the computer restarts), and a mirror
 # list with a server in it
 post_install() {
-	systemctl preset tacit-fetch-updates.timer tacit-system-update.service >/dev/null 2>&1 || true
+	_updates "$2"
 	_mirrors
 	_nvidia
 	_network
@@ -10,7 +10,14 @@ post_install() {
 	_keyring
 }
 post_upgrade() {
-	post_install
+	post_install "$1" "$2"
+}
+# The updates' presets at the install, and at an update from before 1.0.2 (0.2.1-24): every tacit-session since applied
+# them at its own install or update, and applied again on each update they turned the background download back on for a
+# person who had turned it off
+_updates() {
+	[ -n "$1" ] && (( $(vercmp "$1" 0.2.1-24) >= 0 )) && return 0
+	systemctl preset tacit-fetch-updates.timer tacit-system-update.service >/dev/null 2>&1 || true
 }
 # The mirror list: Tacit's tested copy of Arch (mirror.tacitos.co, Arch as it was on the day Tacit tested), so an update
 # from Restart or from pacman installs that set and nothing newer. Moved there from the list Setup wrote before 1.0.2
