@@ -4,7 +4,7 @@
 pkgname=tacit-qt6-declarative
 _pkgver=6.12.0
 pkgver=6.12.0
-pkgrel=2
+pkgrel=3
 arch=('aarch64' 'x86_64')
 url='https://github.com/ciscobugger/tacit-build'
 license=('GPL-3.0-only' 'LGPL-3.0-only' 'LicenseRef-Qt-Commercial' 'Qt-GPL-exception-1.0')

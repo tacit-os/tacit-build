@@ -1,6 +1,23 @@
 {
   "releases": [
     {
+      "version": "1.2.15",
+      "date": "2026-11-14",
+      "changes": [
+        "Thyris plays sound again. Since 1.2.14 every page was silent.",
+        "The volume goes all the way to 100% on computers that still stopped at 99% after the last update.",
+        "The Tacit stick starts straight away. It showed a loading screen for a minute or more first.",
+        "A wallpaper you pick in Try Tacit shows at once.",
+        "English in Setup comes with the US keyboard, so Shift+2 types @.",
+        "A wallpaper smaller than the screen fills it. It sat in the top-left corner with black around it.",
+        "Notifications show their message, not only who sent it.",
+        "Put back from the Trash next to a file of the same name brings it back as \"notes 2.txt\", and a USB stick's trash shows in the Trash.",
+        "Settings can cancel tonight's update.",
+        "If a start-up option ever leaves the screen blank, hold Space as the computer starts and choose Tacit (safe start).",
+        "And about 650 smaller fixes across the desktop, Settings, Files, Apps, Praxis, Thyris and Setup."
+      ]
+    },
+    {
       "version": "1.2.14",
       "date": "2026-11-12",
       "changes": [

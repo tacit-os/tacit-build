@@ -2,7 +2,7 @@
 # so it is carried here from upstream's tag. libmpv comes with mpv.
 pkgname=mpvpaper
 pkgver=1.9
-pkgrel=1
+pkgrel=2
 pkgdesc="Video wallpaper program for wlroots based Wayland compositors"
 arch=('aarch64' 'x86_64')
 url="https://github.com/GhostNaN/mpvpaper"

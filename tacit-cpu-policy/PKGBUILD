@@ -1,7 +1,7 @@
 # Tacit: the processor's power mode, chosen for the charger and for the battery (Settings > Battery).
 pkgname=tacit-cpu-policy
 pkgver=0.2.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Tacit: power mode for the charger and the battery"
 arch=('any')
 url="https://github.com/ciscobugger/tacit-cpu-policy"
