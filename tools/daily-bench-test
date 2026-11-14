@@ -25,7 +25,9 @@ FAKE_VM = r'''#!/usr/bin/env python3
 import json, os, random, re, sys
 S = os.path.expanduser("~/tacit-vm/fake.json")
 st = json.load(open(S)) if os.path.exists(S) else {"power": "on", "calls": 0, "armed": {}, "keys": [], "boots": 0,
-                                                   "locked": False, "rebooting": 0, "log": [],
+                                                   "locked": os.environ.get("FAKE_AT_BOOTLOCK") == "1" or os.environ.get("FAKE_IDLE_LOCKED") == "1",
+                                                   "at_bootlock": os.environ.get("FAKE_AT_BOOTLOCK") == "1", "rebooting": 0, "log": [],
+                                                   "screen_off": os.environ.get("FAKE_IDLE_LOCKED") == "1",
                                                    "lang": {"lang": "en_GB.UTF-8", "layout": "gb"}, "group": 0,
                                                    "tacit": os.environ.get("FAKE_TACIT", "1.2.15")}
 bad = os.environ.get("FAKE_SCENARIO") == "bad"
@@ -92,12 +94,12 @@ if a[0] == "wake":
     st["power"], st["locked"] = "on", True
     done(0)
 if a[0] == "disk":
-    st["power"], st["boots"], st["disk_at"] = "on", st["boots"] + 1, time.time()
+    st["power"], st["boots"], st["disk_at"], st["at_bootlock"] = "on", st["boots"] + 1, time.time(), True
     done(0, "started with KVM")
 if a[0] == "stop":
     st["power"] = "off"
     done(0)
-GUEST = ("lang", "group", "locked", "tacit", "dialog", "lived_home", "update_armed")
+GUEST = ("lang", "group", "locked", "at_bootlock", "screen_off", "tacit", "dialog", "lived_home", "update_armed")
 if a[0] == "snapshot":
     snaps = st.setdefault("snapshots", {})
     if a[1] == "prepare":
@@ -125,6 +127,7 @@ if a[0] == "key" and os.environ.get("FAKE_KEY_FAIL") and os.environ["FAKE_KEY_FA
     done(1, "vm: qmp send-key: {'class': 'GenericError', 'desc': 'stand-in: the keyboard is gone'}")
 if a[0] in ("key", "type", "click", "scroll"):
     st["keys"].append([a[0]] + a[1:])
+    st["screen_off"] = False        # any key or click wakes a screen dpms turned off
     if a[1:] == ["alt", "shift"] and "," in st["lang"]["layout"]:
         st["group"] = 1 - st["group"]
     if a[0] == "type" and os.environ.get("TACIT_VM_PASSWORD", "pw-4711") in " ".join(a[1:]):
@@ -140,7 +143,7 @@ if cmd[0] == "systemctl":
     if cmd[1] == "poweroff":
         st["power"] = "off"
     if cmd[1] == "reboot":
-        st["disk_at"], st["boots"], st["group"] = time.time(), st["boots"] + 1, 0
+        st["disk_at"], st["boots"], st["group"], st["at_bootlock"] = time.time(), st["boots"] + 1, 0, True
         if st.get("lang_pending"):
             st["lang"] = st.pop("lang_pending")
         if st.pop("update_armed", False):
@@ -170,7 +173,7 @@ version = st["tacit"]
 layout = st["lang"]["layout"]
 active = "Russian" if st["group"] == 1 else {"de": "German", "gb": "English (UK)"}.get(layout.split(",")[0], "English (US)")
 if step == "preflight":
-    out = {"ok": args[0] == version, "tacit": version + "-1", "hyprland": "v0.57.0",
+    out = {"ok": args[0] == version, "tacit": version + "-1", "hyprland": "v0.57.0", "gpu": os.environ.get("FAKE_GPU", "bochs-drm"),
            "language": dict(st["lang"], active=active),
            "why": None if args[0] == version else f"the test computer has tacit {version}-1, not {args[0]}"}
 elif step == "lang-set":
@@ -238,6 +241,8 @@ elif step == "result":
             st["group"] = 0 if not bad else st["group"]
             out["ok"] = st.get("typed_password", False)
             if not out["ok"]: out["why"] = "not unlocked within 30 s of the press"
+            elif spec == "enter-usable":
+                st["at_bootlock"] = False
         if spec == "notch-click" and bad:
             out = {"ok": False, "spec": spec, "why": "no closelayer>>quickshell:islandAway within 10 s of the press"}
 elif step == "sound":
@@ -263,13 +268,19 @@ elif step == "update-check":
     out = ({"ok": False, "outside": True, "seconds": 3, "why": "the check ended failed/exit-code (status 1): failed retrieving file"}
            if outside else {"ok": True, "seconds": j(12), "waiting": 0})
 elif step == "suspend":
+    st["suspends"] = st.get("suspends", 0) + 1
     st["power"] = "suspended"
 elif step == "desktop":
-    out = {"ok": not st["locked"], "locked": st["locked"], "hyprland": True, "shell": True, "drawn": True,
+    out = {"ok": not st["locked"] and not st.get("screen_off"), "locked": st["locked"], "hyprland": True, "shell": True,
+           "drawn": not st.get("screen_off"),
            "why": None}
 elif step == "boot-state":
-    out = {"uptime": round(time.time() - st.get("disk_at", 0) - 2.0, 2), "bootlock": {"pid": 900, "at": j(9.5), "how": "its log"}, "desktop": False}
-    st["locked"] = True
+    # the sign-in screen after a start, until the password is typed there (the real one: the shell's boot lock)
+    at = st.get("at_bootlock", False)
+    out = {"uptime": round(time.time() - st.get("disk_at", 0) - 2.0, 2),
+           "bootlock": {"pid": 900, "at": j(9.5), "how": "its log"} if at else None, "desktop": not at}
+    if at:
+        st["locked"] = True
 elif step == "idle":
     out = {"ok": True, "cpu": {"shell": [j(0.8, .2) for _ in range(5)], "thyris": [j(0.4, .2) for _ in range(5)]},
            "wakeups": {"shell": [j(60, .1) for _ in range(5)]}, "system_cpu": [j(2.1, .2) for _ in range(5)],
@@ -481,6 +492,40 @@ def fake_runs(tmp):
           "lock" not in rec["tasks"] and "sleep" not in rec["tasks"] and len(rec["not_run"]) == 4 and "no password" in md, rec["not_run"])
     check("nothing typed but the search's word", [k[-1] for k in fake["keys"] if k[0] == "type"] == ["graphis"], fake["keys"])
 
+    print("QEMU's virtio-vga, which does not come back from sleep")
+    p, fake, log = bench(tmp, repo, "1.2.16", "--runs", "1", TACIT_VM_PASSWORD="pw-4711", FAKE_SCENARIO="good", FAKE_TACIT="1.2.16",
+                         FAKE_GPU="virtio_gpu")
+    rec, md = read(repo, latest(repo, "daily-1.2.16"))
+    t = rec["tasks"].get("sleep", {})
+    check("sleep not tried and said not measured, with how to measure it; the tasks after it still work",
+          t.get("unmeasured") == 1 and not t.get("failed") and "VM_VGA=std" in " ".join(t.get("unmeasured_why", []))
+          and not fake.get("suspends") and all(x["worked"] == x["runs"] for k, x in rec["tasks"].items() if k != "sleep"),
+          (t, fake.get("suspends"), {k: (x["worked"], x["runs"]) for k, x in rec["tasks"].items()}))
+
+    print("a test computer that locked itself and turned its screen off, left alone")
+    p, fake, log = bench(tmp, repo, "1.2.16", "--runs", "1", TACIT_VM_PASSWORD="pw-4711", FAKE_SCENARIO="good", FAKE_TACIT="1.2.16",
+                         FAKE_IDLE_LOCKED="1")
+    rec, md = read(repo, latest(repo, "daily-1.2.16"))
+    typed = [k[-1] for k in fake["keys"] if k[0] == "type"]
+    check("woken with a key, unlocked, and the run measured from a desktop",
+          p.returncode == 0 and "woken and unlocked" in log and typed[:1] == ["pw-4711"]
+          and all(t["worked"] == t["runs"] for t in rec["tasks"].values()),
+          (p.returncode, typed[:3], {k: (t["worked"], t["runs"], t["why"]) for k, t in rec["tasks"].items()}, log[-600:]))
+
+    print("a test disk at its sign-in screen (the boot lock), as vm disk leaves it")
+    p, fake, log = bench(tmp, repo, "1.2.16", "--runs", "1", TACIT_VM_PASSWORD="pw-4711", FAKE_SCENARIO="good", FAKE_TACIT="1.2.16",
+                         FAKE_AT_BOOTLOCK="1")
+    rec, md = read(repo, latest(repo, "daily-1.2.16"))
+    typed = [k[-1] for k in fake["keys"] if k[0] == "type"]
+    check("the password typed at the boot lock first, then the run measured from a desktop",
+          p.returncode == 0 and "signed in at the boot lock" in log and typed[:1] == ["pw-4711"]
+          and all(t["worked"] == t["runs"] for t in rec["tasks"].values()) and "lock" in rec["tasks"],
+          (p.returncode, typed[:3], {k: (t["worked"], t["runs"], t["why"]) for k, t in rec["tasks"].items()}, log[-600:]))
+    p, fake, log = bench(tmp, repo, "1.2.16", "--runs", "1", FAKE_SCENARIO="good", FAKE_TACIT="1.2.16", FAKE_AT_BOOTLOCK="1")
+    check("at the boot lock with no password: it stops and says why, nothing typed",
+          p.returncode != 0 and "no password to sign in with" in p.stderr and not [k for k in fake["keys"] if k[0] == "type"],
+          (p.returncode, p.stderr[-300:], fake["keys"][:5]))
+
     print("a soak (20 s stands for 8 h)")
     p, fake, log = bench(tmp, repo, "1.2.15", "--soak", "20s", "--runs", "1", TACIT_VM_PASSWORD="pw-4711", FAKE_SCENARIO="good")
     rec, md = read(repo, "daily-1.2.15-soak")
@@ -637,24 +682,32 @@ def fake_runs(tmp):
     check("the recording holds every exchange with the VM, with the run's record, scorecard and how it was made",
           len(ex) > 100 and all(os.path.exists(f"{rdir}/{f}") for f in ("daily.json", "daily.md", "meta.json"))
           and any(e["argv"][:1] == ["snapshot"] for e in ex), (len(ex), os.listdir(rdir) if os.path.isdir(rdir) else None))
-    p, fake, log = bench(tmp, repo, "1.2.17", "--runs", "1", "--suite", "everyday", TACIT_VM_PASSWORD="pw-4711",
+    # the recording keeps the password as "replayed" (a recording is committed): the replay types that
+    check("the recording holds no password", "pw-4711" not in open(f"{rdir}/exchanges.jsonl").read(), None)
+    p, fake, log = bench(tmp, repo, "1.2.17", "--runs", "1", "--suite", "everyday", TACIT_VM_PASSWORD="replayed",
                          FAKE_REPLAY=f"{rdir}/exchanges.jsonl")
     again, _ = read(repo, latest(repo, "daily-1.2.17"))
     same = lambda r: ({k: (t["worked"], t["failed"], t["unmeasured"]) for k, t in r["tasks"].items()},
-                      {k: st["status"] for k, st in r["suites"]["everyday"]["steps"].items()})
+                      # every suite the record has: a short run (the first real fixture) has none
+                      {f"{n}.{k}": st["status"] for n, su in (r.get("suites") or {}).items() for k, st in su.get("steps", {}).items()})
     check("replayed, every answer came from the recording, and the run judged the same", fake["sources"]["recorded"] > 100
           and fake["sources"]["assumed"] == 0 and fake["sources"]["missing"] == 0 and same(again) == same(first),
           (fake["sources"], fake.get("missing", [])[:5], same(again) == same(first)))
     fixtures = sorted(glob.glob(f"{HERE}/daily-bench-fixtures/*/exchanges.jsonl"))
     print(f"  recorded fixtures from real VM runs: {len(fixtures) or 'none yet'}"
           + ("" if fixtures else " (the stand-in's answers above are ASSUMED; tools/daily-bench --record makes real ones)"))
+    # a repo of their own: a real run's numbers beside the stand-in's runs changed the spread the margins come from, and
+    # the comparisons checked below them
+    ftmp = tempfile.mkdtemp(dir=tmp)
+    frepo = setup(ftmp)
     for fx in fixtures:
         meta = json.load(open(os.path.join(os.path.dirname(fx), "meta.json")))
         want = json.load(open(os.path.join(os.path.dirname(fx), "daily.json")))
-        args = [x for x in meta["args"] if x != "--record"]
-        args = [x for k, x in enumerate(args) if k == 0 or args[k - 1] != "--record"]
-        p, fake, log = bench(tmp, repo, *args, TACIT_VM_PASSWORD="replayed", FAKE_REPLAY=fx)
-        got, _ = read(repo, latest(repo, f"daily-{meta['version']}"))
+        # without --record and the folder after it (removing the flag first left the folder in as an argument)
+        a0 = meta["args"]
+        args = [x for k, x in enumerate(a0) if x != "--record" and (k == 0 or a0[k - 1] != "--record")]
+        p, fake, log = bench(ftmp, frepo, *args, TACIT_VM_PASSWORD="replayed", FAKE_REPLAY=fx)
+        got, _ = read(frepo, latest(frepo, f"daily-{meta['version']}"))
         check(f"{os.path.basename(os.path.dirname(fx))}: replayed from a real run, judged as that run was",
               fake["sources"]["missing"] == 0 and same(got) == same(want), fake.get("missing", [])[:5])
 

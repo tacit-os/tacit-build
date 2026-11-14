@@ -3,6 +3,10 @@
 # with archiso in a privileged Arch container: archiso's baseline profile, iso/ laid over it, the packages from [tacit]
 # as published (~/.cache/tacit-repo/x86_64, tools/publish), checked against Tacit's key. The ISO stays on the machine
 # (~/tacit-iso/work/out) for the VM test; its name is printed.
+# TACIT_ISO_TEST=1, with TACIT_REPO_MIRROR at a test repo (the live database with a release's packages added unsigned,
+# as tools/vm-smoke makes it): a stick for the VM round before the release is signed. Its [tacit] is checked only where
+# it is signed (Optional TrustAll: the build's Required DatabaseRequired stopped at "tacit: missing required signature"),
+# and it is recorded as iso-test-<version>, never as the release's own image that release-check --iso reads.
 # The installer (tacit-install) removes the live system's own files from what it copies: every file archiso's profile
 # and iso/ put in the image, less the ones the installed system keeps (KEEP), listed in /usr/share/tacit/live-files.
 set -eu
@@ -69,7 +73,8 @@ sed -i -E "s|^(options\s+.*archisobasedir.*)$|\1 $QUIET|" $p/efiboot/loader/entr
 sed -i "s/^airootfs_image_type=.*/airootfs_image_type='squashfs'/; s/^airootfs_image_tool_options=.*/airootfs_image_tool_options=('-comp' 'zstd' '-Xcompression-level' '15' '-b' '1M')/" $p/profiledef.sh
 sed -i 's|^file_permissions=(|file_permissions=(\n  ["/usr/lib/tacit/tacit-live"]="0:0:755"|' $p/profiledef.sh
 # [tacit] first, so its packages win over Arch's of the same name
-awk '/^\[core\]/ && !done { print "[tacit]\nSigLevel = Required DatabaseRequired\nServer = file:///work/repo\n"; done=1 } { print }' $p/pacman.conf > $p/pacman.conf.new
+sig="Required DatabaseRequired"; [ -n "${TACIT_ISO_TEST:-}" ] && sig="Optional TrustAll"
+awk -v sig="$sig" '/^\[core\]/ && !done { print "[tacit]\nSigLevel = " sig "\nServer = file:///work/repo\n"; done=1 } { print }' $p/pacman.conf > $p/pacman.conf.new
 mv $p/pacman.conf.new $p/pacman.conf
 echo "== live files: $(wc -l < $p/airootfs/usr/share/tacit/live-files)"; cat $p/airootfs/usr/share/tacit/live-files
 rm -rf /tmp/archiso-work
@@ -111,7 +116,7 @@ gcloud compute scp "${at[@]}" "$tmp/iso.tar" "$tmp/repo.tar" $vm:~/tacit-iso/ >/
 # are, not as two empty variables (a candidate day's Server line was .../2026/11/04//os/ and nothing built)
 mirror=${ARCH_MIRROR:-}; mirror=${mirror//\$/\\\$}
 on "cd ~/tacit-iso && tar -xf iso.tar -C work && tar -xf repo.tar -C work/repo \
-    && (setsid nohup bash -c 'sudo docker run --rm --privileged --network=host -e HOSTUID=\$(id -u) -e ARCH_MIRROR=$mirror -v \$HOME/tacit-iso/work:/work archlinux:latest bash /work/inside.sh > \$HOME/tacit-iso/run.log 2>&1; echo \$? > \$HOME/tacit-iso/done' > /dev/null 2>&1 < /dev/null &)"
+    && (setsid nohup bash -c 'sudo docker run --rm --privileged --network=host -e HOSTUID=\$(id -u) -e ARCH_MIRROR=$mirror -e TACIT_ISO_TEST=${TACIT_ISO_TEST:-} -v \$HOME/tacit-iso/work:/work archlinux:latest bash /work/inside.sh > \$HOME/tacit-iso/run.log 2>&1; echo \$? > \$HOME/tacit-iso/done' > /dev/null 2>&1 < /dev/null &)"
 until on "test -f ~/tacit-iso/done" 2>/dev/null; do sleep 60; done
 on "cat ~/tacit-iso/run.log"
 status=$(on "cat ~/tacit-iso/done")
@@ -126,5 +131,5 @@ size=$(on "stat -c %s $name")
 sha=$(on "sha256sum $name" | cut -d' ' -f1)
 mkdir -p out/x86_64
 printf '%s\ntacit %s\n%s\nsize %s\nsha256 %s\narch day %s\n' "$(date -Is)" "$want" "$(basename "$name")" "$size" "$sha" "$(tools/arch-day)" \
-    > "out/x86_64/iso-${want%-*}"
-echo "the ISO: $(basename "$name"), tacit $want, $size bytes, sha256 $sha"
+    > "out/x86_64/iso-${TACIT_ISO_TEST:+test-}${want%-*}"
+echo "the ISO${TACIT_ISO_TEST:+ (a test image, unsigned [tacit])}: $(basename "$name"), tacit $want, $size bytes, sha256 $sha"

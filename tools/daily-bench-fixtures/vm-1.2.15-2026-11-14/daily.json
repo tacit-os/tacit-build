@@ -1,0 +1,2903 @@
+{
+ "bench": "tacit-daily",
+ "format": 2,
+ "version": "1.2.15",
+ "mode": "short",
+ "soak_s": 0,
+ "runs": 3,
+ "repeat": 3,
+ "started": "2026-11-14T06:35:00+0000",
+ "provisional": true,
+ "kvm": true,
+ "metrics": {
+  "start.settings.cold": {
+   "section": "speed",
+   "unit": "ms",
+   "words": "Settings, cold start",
+   "samples": [
+    5213.5,
+    4604.0,
+    4405.4,
+    5076.7,
+    4075.6,
+    4387.1,
+    5139.7,
+    4360.3,
+    4547.0
+   ],
+   "at": [
+    1.3,
+    1.5,
+    1.7,
+    31.8,
+    31.9,
+    32.1,
+    61.7,
+    61.9,
+    62.1
+   ]
+  },
+  "start.settings.warm": {
+   "section": "speed",
+   "unit": "ms",
+   "words": "Settings, warm start",
+   "samples": [
+    4113.2,
+    3696.0,
+    3627.6,
+    4721.3,
+    3737.9,
+    3730.1,
+    4170.7,
+    3778.0,
+    3783.3
+   ],
+   "at": [
+    1.4,
+    1.6,
+    1.8,
+    31.8,
+    32.0,
+    32.2,
+    61.8,
+    62.0,
+    62.1
+   ]
+  },
+  "start.files.cold": {
+   "section": "speed",
+   "unit": "ms",
+   "words": "Files, cold start",
+   "samples": [
+    1952.7,
+    1192.8,
+    1343.4,
+    1564.0,
+    1131.0,
+    1497.0,
+    1605.0,
+    1352.0,
+    1175.6
+   ],
+   "at": [
+    1.9,
+    1.9,
+    2.0,
+    32.3,
+    32.4,
+    32.5,
+    62.2,
+    62.3,
+    62.4
+   ]
+  },
+  "start.files.warm": {
+   "section": "speed",
+   "unit": "ms",
+   "words": "Files, warm start",
+   "samples": [
+    1302.6,
+    1222.9,
+    1156.0,
+    1293.6,
+    1223.8,
+    1137.3,
+    1412.2,
+    1274.4,
+    1089.8
+   ],
+   "at": [
+    1.9,
+    2.0,
+    2.1,
+    32.3,
+    32.4,
+    32.5,
+    62.3,
+    62.4,
+    62.5
+   ]
+  },
+  "start.thyris.cold": {
+   "section": "speed",
+   "unit": "ms",
+   "words": "Thyris, cold start",
+   "samples": [
+    5878.2,
+    5177.3,
+    5439.7,
+    5581.5,
+    5309.1,
+    5471.0,
+    5500.7,
+    5187.4,
+    5587.4
+   ],
+   "at": [
+    2.2,
+    2.9,
+    3.5,
+    32.6,
+    33.3,
+    33.9,
+    62.6,
+    63.2,
+    63.9
+   ]
+  },
+  "start.thyris.warm": {
+   "section": "speed",
+   "unit": "ms",
+   "words": "Thyris, warm start",
+   "samples": [
+    5555.9,
+    5556.6,
+    5304.4,
+    5830.2,
+    5590.3,
+    5179.5,
+    5938.7,
+    5360.5,
+    5904.0
+   ],
+   "at": [
+    2.5,
+    3.1,
+    3.8,
+    32.9,
+    33.6,
+    34.2,
+    62.9,
+    63.5,
+    64.2
+   ]
+  },
+  "start.praxis.cold": {
+   "section": "speed",
+   "unit": "ms",
+   "words": "Praxis, cold start",
+   "samples": [
+    4517.2,
+    4063.1,
+    4089.3,
+    4053.7,
+    4098.7,
+    4104.9,
+    4340.2,
+    4520.2,
+    4449.3
+   ],
+   "at": [
+    4.2,
+    4.3,
+    4.5,
+    34.6,
+    34.8,
+    35.0,
+    64.5,
+    64.7,
+    64.9
+   ]
+  },
+  "start.praxis.warm": {
+   "section": "speed",
+   "unit": "ms",
+   "words": "Praxis, warm start",
+   "samples": [
+    3852.6,
+    3724.6,
+    3543.7,
+    4247.8,
+    3921.2,
+    3677.4,
+    3874.1,
+    3787.0,
+    3751.5
+   ],
+   "at": [
+    4.3,
+    4.4,
+    4.6,
+    34.7,
+    34.9,
+    35.0,
+    64.6,
+    64.8,
+    64.9
+   ]
+  },
+  "start.graphis.cold": {
+   "section": "speed",
+   "unit": "ms",
+   "words": "Graphis, cold start",
+   "samples": [
+    2984.6,
+    3231.7,
+    3606.7,
+    3150.5,
+    3198.7,
+    3843.1,
+    3405.8,
+    3285.8,
+    3424.6
+   ],
+   "at": [
+    4.7,
+    4.8,
+    4.9,
+    35.1,
+    35.3,
+    35.4,
+    65.1,
+    65.2,
+    65.3
+   ]
+  },
+  "start.graphis.warm": {
+   "section": "speed",
+   "unit": "ms",
+   "words": "Graphis, warm start",
+   "samples": [
+    2599.3,
+    2705.5,
+    2654.2,
+    2830.3,
+    2768.5,
+    3028.8,
+    2681.1,
+    2790.0,
+    2905.5
+   ],
+   "at": [
+    4.7,
+    4.9,
+    5.0,
+    35.2,
+    35.3,
+    35.5,
+    65.1,
+    65.2,
+    65.4
+   ]
+  },
+  "start.viewer.cold": {
+   "section": "speed",
+   "unit": "ms",
+   "words": "Viewer, cold start",
+   "samples": [
+    4003.6,
+    3701.0,
+    4163.6,
+    4197.7,
+    3612.0,
+    3710.9,
+    4509.6,
+    4008.6,
+    3829.0
+   ],
+   "at": [
+    5.1,
+    5.3,
+    5.4,
+    35.6,
+    35.8,
+    35.9,
+    65.5,
+    65.7,
+    65.8
+   ]
+  },
+  "start.viewer.warm": {
+   "section": "speed",
+   "unit": "ms",
+   "words": "Viewer, warm start",
+   "samples": [
+    3126.0,
+    3238.1,
+    3237.3,
+    3492.4,
+    3168.3,
+    3075.9,
+    3309.2,
+    3176.4,
+    3050.2
+   ],
+   "at": [
+    5.2,
+    5.3,
+    5.5,
+    35.7,
+    35.8,
+    36.0,
+    65.6,
+    65.7,
+    65.9
+   ]
+  },
+  "page.load": {
+   "section": "speed",
+   "unit": "ms",
+   "words": "a page load in Thyris, to its load event",
+   "samples": [
+    1019,
+    716,
+    502,
+    708,
+    526,
+    985,
+    712,
+    762,
+    457,
+    494,
+    911,
+    651,
+    465,
+    659,
+    411
+   ],
+   "at": [
+    5.7,
+    5.7,
+    5.7,
+    5.7,
+    5.7,
+    36.2,
+    36.2,
+    36.2,
+    36.2,
+    36.2,
+    66.1,
+    66.1,
+    66.1,
+    66.1,
+    66.1
+   ]
+  },
+  "page.fcp": {
+   "section": "speed",
+   "unit": "ms",
+   "words": "a page load in Thyris, to its first paint",
+   "samples": [
+    444,
+    784,
+    524,
+    148,
+    136,
+    332,
+    764,
+    160,
+    132,
+    204,
+    308,
+    684,
+    140,
+    700,
+    456
+   ],
+   "at": [
+    5.7,
+    5.7,
+    5.7,
+    5.7,
+    5.7,
+    36.2,
+    36.2,
+    36.2,
+    36.2,
+    36.2,
+    66.1,
+    66.1,
+    66.1,
+    66.1,
+    66.1
+   ]
+  },
+  "wallpaper.shown": {
+   "section": "speed",
+   "unit": "ms",
+   "words": "A wallpaper change, until the desktop shows it",
+   "samples": [
+    6362.2,
+    3970.9,
+    4862.5,
+    3808.9,
+    2984.8,
+    5421.0,
+    3574.1,
+    5711.7,
+    4581.8
+   ],
+   "at": [
+    7.0,
+    9.7,
+    11.4,
+    36.9,
+    39.7,
+    41.4,
+    66.9,
+    69.1,
+    70.7
+   ]
+  },
+  "search.shown": {
+   "section": "speed",
+   "unit": "ms",
+   "words": "Search, from the key to shown",
+   "samples": [
+    855.7,
+    510.1,
+    500.5,
+    900.9,
+    297.3,
+    290.2,
+    373.8,
+    507.6,
+    299.4
+   ],
+   "at": [
+    7.5,
+    10.1,
+    11.8,
+    37.4,
+    40.1,
+    41.8,
+    67.3,
+    69.5,
+    71.1
+   ]
+  },
+  "praxis.list": {
+   "section": "speed",
+   "unit": "ms",
+   "words": "Praxis, from its start to its session list",
+   "samples": [
+    3396.2,
+    3336.3,
+    3252.2,
+    3796.4,
+    4048.1,
+    3250.4,
+    3768.5,
+    3261.6,
+    3213.3
+   ],
+   "at": [
+    8.4,
+    10.5,
+    12.1,
+    38.3,
+    40.5,
+    42.1,
+    67.6,
+    69.8,
+    71.5
+   ]
+  },
+  "update.check": {
+   "section": "speed",
+   "unit": "s",
+   "words": "A check for updates",
+   "samples": [
+    4.2,
+    5.1,
+    4.1,
+    6.2,
+    8.2,
+    6.2,
+    6.2,
+    5.1,
+    4.1
+   ],
+   "at": [
+    8.5,
+    10.6,
+    12.2,
+    38.4,
+    40.7,
+    42.3,
+    67.8,
+    69.9,
+    71.6
+   ]
+  },
+  "unlock": {
+   "section": "speed",
+   "unit": "ms",
+   "words": "Unlock, from Enter to the desktop answering",
+   "samples": [
+    1032.5,
+    1001.1,
+    1595.8,
+    832.8,
+    1343.9,
+    779.2,
+    858.5,
+    785.0,
+    866.1
+   ],
+   "at": [
+    9.1,
+    10.7,
+    12.3,
+    39.0,
+    40.8,
+    42.4,
+    68.4,
+    70.0,
+    71.6
+   ]
+  },
+  "wake.agent": {
+   "section": "speed",
+   "unit": "s",
+   "words": "Wake, until the system answers",
+   "samples": [
+    1.08,
+    1.08,
+    1.06,
+    1.14,
+    1.16,
+    1.1,
+    1.11,
+    1.13,
+    1.12
+   ],
+   "at": [
+    9.3,
+    10.9,
+    12.5,
+    39.2,
+    40.9,
+    42.5,
+    68.6,
+    70.2,
+    71.8
+   ]
+  },
+  "wake.desktop": {
+   "section": "speed",
+   "unit": "s",
+   "words": "Wake, until the desktop answers (through the lock)",
+   "samples": [
+    6.46,
+    6.36,
+    6.25,
+    6.82,
+    6.74,
+    6.8,
+    6.41,
+    6.51,
+    6.71
+   ],
+   "at": [
+    9.4,
+    11.0,
+    12.6,
+    39.3,
+    41.0,
+    42.6,
+    68.7,
+    70.3,
+    71.9
+   ]
+  },
+  "notch.shown": {
+   "section": "speed",
+   "unit": "ms",
+   "words": "The notch, from the key to shown",
+   "samples": [
+    344.7,
+    323.0,
+    316.5,
+    792.4,
+    338.8,
+    526.8,
+    312.3,
+    331.2,
+    301.8,
+    691.6,
+    318.8,
+    396.1,
+    323.7,
+    639.8
+   ],
+   "at": [
+    10.3,
+    10.4,
+    12.0,
+    12.0,
+    40.3,
+    40.4,
+    42.0,
+    42.0,
+    67.5,
+    67.5,
+    69.6,
+    69.7,
+    71.3,
+    71.3
+   ]
+  },
+  "growth.shell": {
+   "section": "lightness",
+   "unit": "MB",
+   "words": "The shell: memory growth over the tasks",
+   "samples": [
+    298.3,
+    276.4,
+    337.5
+   ],
+   "at": [
+    12.6,
+    42.7,
+    71.9
+   ]
+  },
+  "growth.hyprland": {
+   "section": "lightness",
+   "unit": "MB",
+   "words": "Hyprland: memory growth over the tasks",
+   "samples": [
+    339.8,
+    319.5,
+    343.3
+   ],
+   "at": [
+    12.6,
+    42.7,
+    71.9
+   ]
+  },
+  "pss.shell": {
+   "section": "lightness",
+   "unit": "MB",
+   "words": "The shell: memory after 10 minutes at rest",
+   "samples": [
+    900.4,
+    899.9,
+    900.0,
+    891.5,
+    891.5,
+    891.6,
+    890.9,
+    890.8,
+    890.9
+   ],
+   "at": [
+    23.4,
+    23.4,
+    23.4,
+    53.5,
+    53.5,
+    53.5,
+    82.7,
+    82.7,
+    82.7
+   ]
+  },
+  "pss.settings": {
+   "section": "lightness",
+   "unit": "MB",
+   "words": "Settings: memory after 10 minutes at rest",
+   "samples": [
+    345.3,
+    347.7,
+    347.0,
+    358.4,
+    358.0,
+    358.7,
+    362.8,
+    362.5,
+    362.8
+   ],
+   "at": [
+    23.4,
+    23.4,
+    23.4,
+    53.5,
+    53.5,
+    53.5,
+    82.7,
+    82.7,
+    82.7
+   ]
+  },
+  "pss.praxis": {
+   "section": "lightness",
+   "unit": "MB",
+   "words": "Praxis: memory after 10 minutes at rest",
+   "samples": [
+    208.3,
+    208.3,
+    208.3,
+    219.9,
+    219.8,
+    220.0,
+    203.9,
+    203.9,
+    203.9
+   ],
+   "at": [
+    23.4,
+    23.4,
+    23.4,
+    53.5,
+    53.5,
+    53.5,
+    82.7,
+    82.7,
+    82.7
+   ]
+  },
+  "pss.graphis": {
+   "section": "lightness",
+   "unit": "MB",
+   "words": "Graphis: memory after 10 minutes at rest",
+   "samples": [
+    173.5,
+    173.5,
+    173.5,
+    172.8,
+    172.8,
+    172.9,
+    168.8,
+    168.8,
+    168.8
+   ],
+   "at": [
+    23.4,
+    23.4,
+    23.4,
+    53.5,
+    53.5,
+    53.5,
+    82.7,
+    82.7,
+    82.7
+   ]
+  },
+  "pss.viewer": {
+   "section": "lightness",
+   "unit": "MB",
+   "words": "Viewer: memory after 10 minutes at rest",
+   "samples": [
+    321.1,
+    321.0,
+    321.0,
+    348.6,
+    348.6,
+    348.6,
+    308.5,
+    308.5,
+    308.5
+   ],
+   "at": [
+    23.4,
+    23.4,
+    23.4,
+    53.5,
+    53.5,
+    53.5,
+    82.7,
+    82.7,
+    82.7
+   ]
+  },
+  "pss.thyris": {
+   "section": "lightness",
+   "unit": "MB",
+   "words": "Thyris: memory after 10 minutes at rest",
+   "samples": [
+    587.9,
+    587.9,
+    587.9,
+    587.4,
+    587.4,
+    587.4,
+    526.4,
+    526.0,
+    525.6
+   ],
+   "at": [
+    23.4,
+    23.4,
+    23.4,
+    53.5,
+    53.5,
+    53.5,
+    82.7,
+    82.7,
+    82.7
+   ]
+  },
+  "pss.hyprland": {
+   "section": "lightness",
+   "unit": "MB",
+   "words": "Hyprland: memory after 10 minutes at rest",
+   "samples": [
+    1800.6,
+    1801.2,
+    1800.4,
+    1791.1,
+    1792.3,
+    1791.4,
+    1728.9,
+    1729.5,
+    1728.2
+   ],
+   "at": [
+    23.4,
+    23.4,
+    23.4,
+    53.5,
+    53.5,
+    53.5,
+    82.7,
+    82.7,
+    82.7
+   ]
+  },
+  "cpu.shell": {
+   "section": "lightness",
+   "unit": "%",
+   "words": "The shell: processor at rest",
+   "samples": [
+    4.33,
+    4.37,
+    4.21,
+    4.25,
+    4.16,
+    4.45,
+    4.4,
+    4.3,
+    4.45,
+    4.31,
+    4.4,
+    4.28,
+    4.23,
+    4.38,
+    4.21
+   ],
+   "at": [
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    82.7,
+    82.7,
+    82.7,
+    82.7,
+    82.7
+   ]
+  },
+  "cpu.settings": {
+   "section": "lightness",
+   "unit": "%",
+   "words": "Settings: processor at rest",
+   "samples": [
+    9.18,
+    9.15,
+    9.08,
+    8.91,
+    9.09,
+    9.33,
+    9.18,
+    9.39,
+    9.1,
+    9.18,
+    9.33,
+    9.54,
+    9.53,
+    9.24,
+    9.44
+   ],
+   "at": [
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    82.7,
+    82.7,
+    82.7,
+    82.7,
+    82.7
+   ]
+  },
+  "cpu.praxis": {
+   "section": "lightness",
+   "unit": "%",
+   "words": "Praxis: processor at rest",
+   "samples": [
+    1.83,
+    1.98,
+    1.88,
+    1.88,
+    1.92,
+    1.88,
+    1.92,
+    1.95,
+    1.95,
+    2.1,
+    2.07,
+    2.0,
+    1.92,
+    1.9,
+    1.85
+   ],
+   "at": [
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    82.7,
+    82.7,
+    82.7,
+    82.7,
+    82.7
+   ]
+  },
+  "cpu.graphis": {
+   "section": "lightness",
+   "unit": "%",
+   "words": "Graphis: processor at rest",
+   "samples": [
+    2.03,
+    2.03,
+    2.03,
+    2.12,
+    2.05,
+    1.95,
+    2.03,
+    2.02,
+    2.1,
+    2.17,
+    2.0,
+    2.13,
+    1.92,
+    1.92,
+    2.05
+   ],
+   "at": [
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    82.7,
+    82.7,
+    82.7,
+    82.7,
+    82.7
+   ]
+  },
+  "cpu.viewer": {
+   "section": "lightness",
+   "unit": "%",
+   "words": "Viewer: processor at rest",
+   "samples": [
+    12.58,
+    12.93,
+    12.86,
+    12.91,
+    12.92,
+    12.44,
+    12.61,
+    12.79,
+    12.81,
+    12.59,
+    12.79,
+    12.82,
+    12.83,
+    12.89,
+    12.81
+   ],
+   "at": [
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    82.7,
+    82.7,
+    82.7,
+    82.7,
+    82.7
+   ]
+  },
+  "cpu.thyris": {
+   "section": "lightness",
+   "unit": "%",
+   "words": "Thyris: processor at rest",
+   "samples": [
+    4.68,
+    4.43,
+    4.35,
+    4.3,
+    4.48,
+    4.3,
+    4.2,
+    4.43,
+    4.53,
+    4.55,
+    4.3,
+    4.3,
+    4.28,
+    4.18,
+    4.11
+   ],
+   "at": [
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    82.7,
+    82.7,
+    82.7,
+    82.7,
+    82.7
+   ]
+  },
+  "cpu.hyprland": {
+   "section": "lightness",
+   "unit": "%",
+   "words": "Hyprland: processor at rest",
+   "samples": [
+    515.57,
+    516.17,
+    517.23,
+    516.97,
+    517.73,
+    514.02,
+    514.79,
+    514.36,
+    516.19,
+    516.16,
+    515.44,
+    516.49,
+    517.81,
+    514.97,
+    516.9
+   ],
+   "at": [
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    82.7,
+    82.7,
+    82.7,
+    82.7,
+    82.7
+   ]
+  },
+  "wakeups.shell": {
+   "section": "lightness",
+   "unit": "/s",
+   "words": "The shell: wakeups at rest",
+   "samples": [
+    184.5,
+    183.2,
+    184.9,
+    182.2,
+    185.7,
+    185.7,
+    183.2,
+    186.6,
+    183.7,
+    183.0,
+    185.4,
+    186.5,
+    187.7,
+    186.1,
+    184.0
+   ],
+   "at": [
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    82.7,
+    82.7,
+    82.7,
+    82.7,
+    82.7
+   ]
+  },
+  "wakeups.settings": {
+   "section": "lightness",
+   "unit": "/s",
+   "words": "Settings: wakeups at rest",
+   "samples": [
+    427.2,
+    446.4,
+    441.5,
+    442.9,
+    443.0,
+    473.2,
+    479.6,
+    477.6,
+    488.0,
+    483.2,
+    524.5,
+    502.0,
+    523.1,
+    517.5,
+    525.9
+   ],
+   "at": [
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    82.7,
+    82.7,
+    82.7,
+    82.7,
+    82.7
+   ]
+  },
+  "wakeups.praxis": {
+   "section": "lightness",
+   "unit": "/s",
+   "words": "Praxis: wakeups at rest",
+   "samples": [
+    226.8,
+    235.8,
+    226.8,
+    227.3,
+    224.4,
+    222.8,
+    233.1,
+    225.6,
+    223.8,
+    238.9,
+    235.3,
+    229.5,
+    229.9,
+    225.2,
+    223.2
+   ],
+   "at": [
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    82.7,
+    82.7,
+    82.7,
+    82.7,
+    82.7
+   ]
+  },
+  "wakeups.graphis": {
+   "section": "lightness",
+   "unit": "/s",
+   "words": "Graphis: wakeups at rest",
+   "samples": [
+    165.7,
+    172.3,
+    158.4,
+    171.1,
+    166.7,
+    163.5,
+    167.3,
+    161.2,
+    171.2,
+    176.6,
+    161.1,
+    175.2,
+    160.6,
+    157.9,
+    166.1
+   ],
+   "at": [
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    82.7,
+    82.7,
+    82.7,
+    82.7,
+    82.7
+   ]
+  },
+  "wakeups.viewer": {
+   "section": "lightness",
+   "unit": "/s",
+   "words": "Viewer: wakeups at rest",
+   "samples": [
+    174.7,
+    175.0,
+    172.2,
+    175.8,
+    174.8,
+    166.5,
+    169.3,
+    169.6,
+    174.6,
+    170.6,
+    167.7,
+    164.1,
+    170.4,
+    168.1,
+    164.4
+   ],
+   "at": [
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    82.7,
+    82.7,
+    82.7,
+    82.7,
+    82.7
+   ]
+  },
+  "wakeups.thyris": {
+   "section": "lightness",
+   "unit": "/s",
+   "words": "Thyris: wakeups at rest",
+   "samples": [
+    135.3,
+    132.7,
+    132.5,
+    132.8,
+    135.5,
+    134.6,
+    131.3,
+    135.4,
+    136.8,
+    136.9,
+    127.9,
+    135.7,
+    135.0,
+    126.7,
+    134.8
+   ],
+   "at": [
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    82.7,
+    82.7,
+    82.7,
+    82.7,
+    82.7
+   ]
+  },
+  "wakeups.hyprland": {
+   "section": "lightness",
+   "unit": "/s",
+   "words": "Hyprland: wakeups at rest",
+   "samples": [
+    2014.1,
+    1996.8,
+    2009.5,
+    1997.8,
+    2022.6,
+    2000.3,
+    1981.0,
+    1989.2,
+    1978.7,
+    2009.2,
+    2000.1,
+    2047.0,
+    2041.6,
+    1987.7,
+    2053.7
+   ],
+   "at": [
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    82.7,
+    82.7,
+    82.7,
+    82.7,
+    82.7
+   ]
+  },
+  "cpu.all": {
+   "section": "lightness",
+   "unit": "%",
+   "words": "Everything: processor at rest",
+   "samples": [
+    92.72,
+    92.95,
+    93.05,
+    92.95,
+    93.12,
+    92.6,
+    92.73,
+    92.8,
+    93.02,
+    92.94,
+    93.02,
+    93.14,
+    93.26,
+    92.89,
+    93.08
+   ],
+   "at": [
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    23.4,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    53.5,
+    82.7,
+    82.7,
+    82.7,
+    82.7,
+    82.7
+   ]
+  },
+  "disk.caches (home)": {
+   "section": "lightness",
+   "unit": "MB",
+   "words": "Disk: caches (home)",
+   "samples": [
+    11.1,
+    11.1,
+    11.1
+   ],
+   "at": [
+    23.6,
+    53.7,
+    83.0
+   ]
+  },
+  "disk.Thyris's data": {
+   "section": "lightness",
+   "unit": "MB",
+   "words": "Disk: Thyris's data",
+   "samples": [
+    193.9,
+    193.9,
+    193.9
+   ],
+   "at": [
+    23.6,
+    53.7,
+    83.0
+   ]
+  },
+  "disk.journal": {
+   "section": "lightness",
+   "unit": "MB",
+   "words": "Disk: journal",
+   "samples": [
+    24.0,
+    24.0,
+    24.0
+   ],
+   "at": [
+    23.6,
+    53.7,
+    83.0
+   ]
+  },
+  "disk.package cache": {
+   "section": "lightness",
+   "unit": "MB",
+   "words": "Disk: package cache",
+   "samples": [
+    128.0,
+    128.0,
+    128.0
+   ],
+   "at": [
+    23.6,
+    53.7,
+    83.0
+   ]
+  },
+  "disk.crash dumps": {
+   "section": "lightness",
+   "unit": "MB",
+   "words": "Disk: crash dumps",
+   "samples": [
+    56.3,
+    56.2,
+    56.3
+   ],
+   "at": [
+    23.6,
+    53.7,
+    83.0
+   ]
+  },
+  "disk.shell logs": {
+   "section": "lightness",
+   "unit": "MB",
+   "words": "Disk: shell logs",
+   "samples": [
+    1.1,
+    1.1,
+    1.1
+   ],
+   "at": [
+    23.6,
+    53.7,
+    83.0
+   ]
+  },
+  "boot.sign_in": {
+   "section": "speed",
+   "unit": "s",
+   "words": "Power on to the sign-in screen",
+   "samples": [
+    22.24,
+    14.86,
+    14.97,
+    14.82,
+    15.01,
+    15.05,
+    14.92,
+    14.76,
+    14.98
+   ],
+   "at": [
+    24.4,
+    26.9,
+    29.4,
+    54.3,
+    56.8,
+    59.3,
+    83.5,
+    86.0,
+    88.5
+   ]
+  },
+  "boot.desktop": {
+   "section": "speed",
+   "unit": "ms",
+   "words": "Sign-in to a desktop that answers",
+   "samples": [
+    1166.5,
+    1059.3,
+    1151.1,
+    1172.2,
+    1169.1,
+    1256.6,
+    1173.1,
+    1128.0,
+    1059.2
+   ],
+   "at": [
+    26.5,
+    29.0,
+    31.4,
+    56.4,
+    58.9,
+    61.4,
+    85.6,
+    88.1,
+    90.6
+   ]
+  }
+ },
+ "tasks": {
+  "sound": {
+   "words": "Sound plays from Thyris",
+   "runs": 9,
+   "worked": 9,
+   "failed": 0,
+   "unmeasured": 0,
+   "why": [],
+   "unmeasured_why": [],
+   "outcomes": [
+    [
+     0,
+     "worked"
+    ],
+    [
+     0,
+     "worked"
+    ],
+    [
+     0,
+     "worked"
+    ],
+    [
+     1,
+     "worked"
+    ],
+    [
+     1,
+     "worked"
+    ],
+    [
+     1,
+     "worked"
+    ],
+    [
+     2,
+     "worked"
+    ],
+    [
+     2,
+     "worked"
+    ],
+    [
+     2,
+     "worked"
+    ]
+   ],
+   "retries": [],
+   "unstable": false,
+   "by_repeat": [
+    "worked",
+    "worked",
+    "worked"
+   ],
+   "agreement": "3 of 3 repeats the same"
+  },
+  "wallpaper": {
+   "words": "A wallpaper change shows",
+   "runs": 9,
+   "worked": 9,
+   "failed": 0,
+   "unmeasured": 0,
+   "why": [],
+   "unmeasured_why": [],
+   "outcomes": [
+    [
+     0,
+     "worked"
+    ],
+    [
+     0,
+     "worked"
+    ],
+    [
+     0,
+     "worked"
+    ],
+    [
+     1,
+     "worked"
+    ],
+    [
+     1,
+     "worked"
+    ],
+    [
+     1,
+     "worked"
+    ],
+    [
+     2,
+     "worked"
+    ],
+    [
+     2,
+     "worked"
+    ],
+    [
+     2,
+     "worked"
+    ]
+   ],
+   "retries": [],
+   "unstable": false,
+   "by_repeat": [
+    "worked",
+    "worked",
+    "worked"
+   ],
+   "agreement": "3 of 3 repeats the same"
+  },
+  "files-preview": {
+   "words": "Files previews a picture and a PDF",
+   "runs": 9,
+   "worked": 0,
+   "failed": 9,
+   "unmeasured": 0,
+   "why": [
+    "the PDF was not previewed as itself on the settled screen (its worst cell 0% its colour, the box 1.4% of the screen; needs 80 % and 2%)",
+    "the PDF was not previewed as itself on the settled screen (its worst cell 0% its colour, the box 5.1% of the screen; needs 80 % and 2%)",
+    "the PDF was not previewed as itself on the settled screen (its worst cell 0% its colour, the box 1.4% of the screen; needs 80 % and 2%)",
+    "the PDF was not previewed as itself on the settled screen (its worst cell 0% its colour, the box 1.4% of the screen; needs 80 % and 2%)",
+    "the PDF was not previewed as itself on the settled screen (its worst cell 0% its colour, the box 5.1% of the screen; needs 80 % and 2%)",
+    "the PDF was not previewed as itself on the settled screen (its worst cell 0% its colour, the box 1.4% of the screen; needs 80 % and 2%)",
+    "the PDF was not previewed as itself on the settled screen (its worst cell 0% its colour, the box 1.4% of the screen; needs 80 % and 2%)",
+    "the PDF was not previewed as itself on the settled screen (its worst cell 0% its colour, the box 5.1% of the screen; needs 80 % and 2%)",
+    "the PDF was not previewed as itself on the settled screen (its worst cell 0% its colour, the box 1.4% of the screen; needs 80 % and 2%)"
+   ],
+   "unmeasured_why": [],
+   "outcomes": [
+    [
+     0,
+     "failed"
+    ],
+    [
+     0,
+     "failed"
+    ],
+    [
+     0,
+     "failed"
+    ],
+    [
+     1,
+     "failed"
+    ],
+    [
+     1,
+     "failed"
+    ],
+    [
+     1,
+     "failed"
+    ],
+    [
+     2,
+     "failed"
+    ],
+    [
+     2,
+     "failed"
+    ],
+    [
+     2,
+     "failed"
+    ]
+   ],
+   "retries": [],
+   "unstable": false,
+   "by_repeat": [
+    "failed",
+    "failed",
+    "failed"
+   ],
+   "agreement": "3 of 3 repeats the same"
+  },
+  "search": {
+   "words": "Search finds an app and starts it",
+   "runs": 9,
+   "worked": 7,
+   "failed": 2,
+   "unmeasured": 0,
+   "why": [
+    "Enter on \"graphis\" in search: did not happen in 30 s: graphis's window mapped and graphis answering",
+    "Enter on \"graphis\" in search: did not happen in 30 s: graphis's window mapped and graphis answering"
+   ],
+   "unmeasured_why": [],
+   "outcomes": [
+    [
+     0,
+     "failed"
+    ],
+    [
+     0,
+     "worked"
+    ],
+    [
+     0,
+     "worked"
+    ],
+    [
+     1,
+     "failed"
+    ],
+    [
+     1,
+     "worked"
+    ],
+    [
+     1,
+     "worked"
+    ],
+    [
+     2,
+     "worked"
+    ],
+    [
+     2,
+     "worked"
+    ],
+    [
+     2,
+     "worked"
+    ]
+   ],
+   "retries": [],
+   "unstable": true,
+   "by_repeat": [
+    "failed",
+    "failed",
+    "worked"
+   ],
+   "agreement": "2 of 3 repeats the same"
+  },
+  "notch": {
+   "words": "The notch opens and closes, with Esc and with a click outside",
+   "runs": 9,
+   "worked": 7,
+   "failed": 2,
+   "unmeasured": 0,
+   "why": [
+    "notch-open: no openlayer>>quickshell:islandAway within 10 s of the press",
+    "notch-open: no openlayer>>quickshell:islandAway within 10 s of the press"
+   ],
+   "unmeasured_why": [],
+   "outcomes": [
+    [
+     0,
+     "failed"
+    ],
+    [
+     0,
+     "worked"
+    ],
+    [
+     0,
+     "worked"
+    ],
+    [
+     1,
+     "failed"
+    ],
+    [
+     1,
+     "worked"
+    ],
+    [
+     1,
+     "worked"
+    ],
+    [
+     2,
+     "worked"
+    ],
+    [
+     2,
+     "worked"
+    ],
+    [
+     2,
+     "worked"
+    ]
+   ],
+   "retries": [],
+   "unstable": true,
+   "by_repeat": [
+    "failed",
+    "failed",
+    "worked"
+   ],
+   "agreement": "2 of 3 repeats the same"
+  },
+  "praxis": {
+   "words": "Praxis opens a session",
+   "runs": 9,
+   "worked": 9,
+   "failed": 0,
+   "unmeasured": 0,
+   "why": [],
+   "unmeasured_why": [],
+   "outcomes": [
+    [
+     0,
+     "worked"
+    ],
+    [
+     0,
+     "worked"
+    ],
+    [
+     0,
+     "worked"
+    ],
+    [
+     1,
+     "worked"
+    ],
+    [
+     1,
+     "worked"
+    ],
+    [
+     1,
+     "worked"
+    ],
+    [
+     2,
+     "worked"
+    ],
+    [
+     2,
+     "worked"
+    ],
+    [
+     2,
+     "worked"
+    ]
+   ],
+   "retries": [],
+   "unstable": false,
+   "by_repeat": [
+    "worked",
+    "worked",
+    "worked"
+   ],
+   "agreement": "3 of 3 repeats the same"
+  },
+  "update-check": {
+   "words": "Updates: a check for updates",
+   "runs": 9,
+   "worked": 9,
+   "failed": 0,
+   "unmeasured": 0,
+   "why": [],
+   "unmeasured_why": [],
+   "outcomes": [
+    [
+     0,
+     "worked"
+    ],
+    [
+     0,
+     "worked"
+    ],
+    [
+     0,
+     "worked"
+    ],
+    [
+     1,
+     "worked"
+    ],
+    [
+     1,
+     "worked"
+    ],
+    [
+     1,
+     "worked"
+    ],
+    [
+     2,
+     "worked"
+    ],
+    [
+     2,
+     "worked"
+    ],
+    [
+     2,
+     "worked"
+    ]
+   ],
+   "retries": [],
+   "unstable": false,
+   "by_repeat": [
+    "worked",
+    "worked",
+    "worked"
+   ],
+   "agreement": "3 of 3 repeats the same"
+  },
+  "lock": {
+   "words": "Lock and unlock",
+   "runs": 9,
+   "worked": 9,
+   "failed": 0,
+   "unmeasured": 0,
+   "why": [],
+   "unmeasured_why": [],
+   "outcomes": [
+    [
+     0,
+     "worked"
+    ],
+    [
+     0,
+     "worked"
+    ],
+    [
+     0,
+     "worked"
+    ],
+    [
+     1,
+     "worked"
+    ],
+    [
+     1,
+     "worked"
+    ],
+    [
+     1,
+     "worked"
+    ],
+    [
+     2,
+     "worked"
+    ],
+    [
+     2,
+     "worked"
+    ],
+    [
+     2,
+     "worked"
+    ]
+   ],
+   "retries": [
+    {
+     "first": "not unlocked within 30 s of the press",
+     "second": "worked"
+    },
+    {
+     "first": "not unlocked within 30 s of the press",
+     "second": "worked"
+    },
+    {
+     "first": "not unlocked within 30 s of the press",
+     "second": "worked"
+    }
+   ],
+   "unstable": false,
+   "by_repeat": [
+    "worked",
+    "worked",
+    "worked"
+   ],
+   "agreement": "3 of 3 repeats the same"
+  },
+  "sleep": {
+   "words": "Sleep and wake",
+   "runs": 9,
+   "worked": 9,
+   "failed": 0,
+   "unmeasured": 0,
+   "why": [],
+   "unmeasured_why": [],
+   "outcomes": [
+    [
+     0,
+     "worked"
+    ],
+    [
+     0,
+     "worked"
+    ],
+    [
+     0,
+     "worked"
+    ],
+    [
+     1,
+     "worked"
+    ],
+    [
+     1,
+     "worked"
+    ],
+    [
+     1,
+     "worked"
+    ],
+    [
+     2,
+     "worked"
+    ],
+    [
+     2,
+     "worked"
+    ],
+    [
+     2,
+     "worked"
+    ]
+   ],
+   "retries": [],
+   "unstable": false,
+   "by_repeat": [
+    "worked",
+    "worked",
+    "worked"
+   ],
+   "agreement": "3 of 3 repeats the same"
+  }
+ },
+ "suites": {},
+ "reliability": {
+  "crashes": [
+   {
+    "exe": "/usr/lib/tacit/thyris/browser",
+    "sig": 5,
+    "time": 1794638534502810
+   },
+   {
+    "exe": "/usr/lib/tacit/thyris/browser",
+    "sig": 5,
+    "time": 1794638694151173
+   },
+   {
+    "exe": "/usr/lib/tacit/thyris/browser",
+    "sig": 5,
+    "time": 1794638792786344
+   },
+   {
+    "exe": "/usr/bin/hyprsunset",
+    "sig": 6,
+    "time": 1794639532525042
+   },
+   {
+    "exe": "/usr/lib/xdg-desktop-portal-hyprland",
+    "sig": 11,
+    "time": 1794639532754879
+   },
+   {
+    "exe": "/usr/bin/Xwayland",
+    "sig": 6,
+    "time": 1794639532953284
+   },
+   {
+    "exe": "/usr/bin/hyprsunset",
+    "sig": 6,
+    "time": 1794639694855810
+   },
+   {
+    "exe": "/usr/lib/xdg-desktop-portal-hyprland",
+    "sig": 11,
+    "time": 1794639694988815
+   },
+   {
+    "exe": "/usr/bin/start-hyprland",
+    "sig": 6,
+    "time": 1794639844252952
+   },
+   {
+    "exe": "/usr/lib/xdg-desktop-portal-hyprland",
+    "sig": 11,
+    "time": 1794639844384668
+   },
+   {
+    "exe": "/usr/bin/hyprsunset",
+    "sig": 6,
+    "time": 1794639844387208
+   },
+   {
+    "exe": "/usr/lib/tacit/thyris/browser",
+    "sig": 5,
+    "time": 1794640335076198
+   },
+   {
+    "exe": "/usr/lib/tacit/thyris/browser",
+    "sig": 5,
+    "time": 1794640494307775
+   },
+   {
+    "exe": "/usr/lib/tacit/thyris/browser",
+    "sig": 5,
+    "time": 1794640589399630
+   },
+   {
+    "exe": "/usr/bin/hyprsunset",
+    "sig": 6,
+    "time": 1794641339733423
+   },
+   {
+    "exe": "/usr/bin/Xwayland",
+    "sig": 6,
+    "time": 1794641339898556
+   },
+   {
+    "exe": "/usr/bin/start-hyprland",
+    "sig": 6,
+    "time": 1794641489863302
+   },
+   {
+    "exe": "/usr/bin/hyprsunset",
+    "sig": 6,
+    "time": 1794641490033112
+   },
+   {
+    "exe": "/usr/bin/hyprsunset",
+    "sig": 6,
+    "time": 1794641640462712
+   },
+   {
+    "exe": "/usr/lib/xdg-desktop-portal-hyprland",
+    "sig": 11,
+    "time": 1794641640565064
+   },
+   {
+    "exe": "/usr/lib/tacit/thyris/browser",
+    "sig": 5,
+    "time": 1794642128130550
+   },
+   {
+    "exe": "/usr/lib/tacit/thyris/browser",
+    "sig": 5,
+    "time": 1794642251270100
+   },
+   {
+    "exe": "/usr/lib/tacit/thyris/browser",
+    "sig": 5,
+    "time": 1794642351941730
+   },
+   {
+    "exe": "/usr/bin/hyprsunset",
+    "sig": 6,
+    "time": 1794643094215542
+   },
+   {
+    "exe": "/usr/lib/xdg-desktop-portal-hyprland",
+    "sig": 11,
+    "time": 1794643094379294
+   },
+   {
+    "exe": "/usr/bin/Xwayland",
+    "sig": 6,
+    "time": 1794643094416438
+   },
+   {
+    "exe": "/usr/bin/hyprsunset",
+    "sig": 6,
+    "time": 1794643243426216
+   },
+   {
+    "exe": "/usr/lib/xdg-desktop-portal-hyprland",
+    "sig": 11,
+    "time": 1794643243429100
+   },
+   {
+    "exe": "/usr/bin/hyprsunset",
+    "sig": 6,
+    "time": 1794643392914795
+   },
+   {
+    "exe": "/usr/lib/xdg-desktop-portal-hyprland",
+    "sig": 11,
+    "time": 1794643392989006
+   }
+  ],
+  "qml": [],
+  "warnings": [
+   "WARN qt.qpa.services: Failed to register with host portal QDBusError(\"org.freedesktop.portal.Error.Failed\", \"Could not register app ID: App info not found for 'graphis'\")",
+   "WARN qt.qpa.services: Failed to register with host portal QDBusError(\"org.freedesktop.portal.Error.Failed\", \"Could not register app ID: App info not found for 'praxis'\")",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f0b1b300180 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f0edbb1b240 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f18fc105180 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f3086a68bc0 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f3086b94ec0 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f3089c97e20 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f3089ddda80 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f3089dddfc0 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f30a66013a0 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f32c048df00 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f44da4aef00 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f45ad28df00 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f57fee8af60 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f70f58f8240 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f9b4908ef00 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7fb90b5100c0 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7fced1e79f00 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7fd5e6244180 but 0x0 is focused",
+   "WARN quickshell.dbus.objectmanager: Failed to create DBusObjectManagerInterface for \"org.bluez\" \"/\" : QDBusError(\"\", \"\")",
+   "WARN scene: @modules/common/widgets/ThumbnailImage.qml[18:5]: Unable to assign [undefined] to QString",
+   "WARN scene: QML FileView at @services/Journal.qml[42:5]: Read of /home/tester/.local/state/crew/events.jsonl failed: File does not exist.",
+   "WARN scene: QML FileView at @services/Threads.qml[30:5]: Read of /home/tester/.local/state/crew/index.json failed: File does not exist.",
+   "WARN scene: QML Loader (parent or ancestor of ThumbnailImage) at @modules/viewer/Frame.qml[93:9]: Cannot open: file:///home/tester/.cache/thumbnails/large/ea5c316ffe43f6dfc5be7078743d5f3e.png",
+   "WARN scene: QML ThumbnailImage at @modules/viewer/Frame.qml[190:25]: Cannot open: file:///home/tester/.cache/thumbnails/large/05cbb2af147becb9ac1daf76331ecc3e.png",
+   "WARN scene: QML ThumbnailImage at @modules/viewer/Frame.qml[190:25]: Cannot open: file:///home/tester/.cache/thumbnails/large/88b890c11c7b06ed4216bc49c2496358.png",
+   "WARN scene: QML ThumbnailImage at @modules/viewer/Frame.qml[190:25]: Cannot open: file:///home/tester/.cache/thumbnails/large/ea5c316ffe43f6dfc5be7078743d5f3e.png",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f1acff07180 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f3086e8c6e0 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f3086e8d220 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f30878dea80 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f30b8719a80 but 0x7f30d59b0f40 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f30b8719a80 but 0x7f30d5a41920 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f30b8719a80 but 0x7f30d5d90e80 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7fac9ad2c240 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7fc1a4f151e0 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::enableSurface(wl_surface*) Trying to enable 0x7f30a5f750c0 but 0x7f30b8719a80 has focus",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::enableSurface(wl_surface*) Trying to enable 0x7f30b1d5f920 but 0x7f30d59b0f40 has focus",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::enableSurface(wl_surface*) Trying to enable 0x7f30b1d5fec0 but 0x7f30d5a41920 has focus",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::enableSurface(wl_surface*) Trying to enable 0x7f30b8719a80 but 0x7f30d5d90e80 has focus",
+   "WARN scene: QML FileView at @services/PaletteFrecency.qml[192:5]: Read of /home/tester/.local/state/quickshell/user/palette-frecency.json failed: File does not exist.",
+   "WARN scene: QML FileView at @services/PaletteRecent.qml[27:5]: Read of /home/tester/.local/share/recently-used.xbel failed: File does not exist.",
+   "WARN scene: QML ThumbnailImage at @modules/ii/files/GalleryView.qml[151:38]: Cannot open: file:///home/tester/.cache/thumbnails/large/c50acf65af346605adbbee76e7073830.png",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f30a65f3d60 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f41b2098f60 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7fcc8fd07180 but 0x0 is focused",
+   "WARN qt.qpa.services: Failed to register with host portal QDBusError(\"org.freedesktop.portal.Error.Failed\", \"Could not register app ID: App info not found for 'org.quickshell'\")",
+   "WARN quickshell.io.fileview: got operation finished from dropped operation qs::io::FileViewOperation(0x7f12e5c7f1e0)",
+   "WARN quickshell.io.fileview: got operation finished from dropped operation qs::io::FileViewOperation(0x7f12e5c7f640)",
+   "WARN quickshell.io.fileview: got operation finished from dropped operation qs::io::FileViewOperation(0x7f12e5d14c80)",
+   "WARN quickshell.io.fileview: got operation finished from dropped operation qs::io::FileViewOperation(0x7f12e5d14d20)",
+   "WARN quickshell.io.fileview: got operation finished from dropped operation qs::io::FileViewOperation(0x7fe493a64a00)",
+   "WARN quickshell.io.fileview: got operation finished from dropped operation qs::io::FileViewOperation(0x7fe498bb60e0)",
+   "WARN quickshell.io.fileview: got operation finished from dropped operation qs::io::FileViewOperation(0x7fe4b1da90a0)",
+   "WARN quickshell.io.fileview: got operation finished from dropped operation qs::io::FileViewOperation(0x7fe4b1db7e20)",
+   "WARN quickshell.io.socket: Socket error for Socket_QML_287(0x7f12c49ea1c0) QLocalSocket::ServerNotFoundError",
+   "WARN scene: QML FileView at @services/DesktopIcons.qml[95:5]: Read of /home/tester/.local/state/quickshell/user/desktopicons.json failed: File does not exist.",
+   "WARN scene: QML IpcHandler at @services/AgentSessions.qml[380:5]: Signal detected: \"shownChanged\"",
+   "WARN scene: QML IpcHandler at @services/AgentSessions.qml[380:5]: Signal detected: \"stageChanged\"",
+   "WARN scene: QML IpcHandler at @services/AgentSessions.qml[380:5]: Signal detected: \"totalChanged\"",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f0020909180 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f0fcfc89f00 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f111cb36180 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f1960102120 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f1fe988cf00 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f3086bb27c0 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f3089e245a0 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f3089e26940 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f3089e26a60 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f3089e33120 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f30a65e6ca0 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f728d864f60 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f80295211e0 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f82574ef180 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7fb71ca90f00 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7fb842094f00 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7fbfaa7270c0 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7fd44806cf60 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f246fc547c0 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f3086bb0660 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f3086edd280 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f30a9c86120 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f30b8719a80 but 0x7f30b61388c0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f30b8719a80 but 0x7f30b849b020 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f30b8719a80 but 0x7f30d59b0040 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f70ddcf5180 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7fbd187060c0 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::enableSurface(wl_surface*) Trying to enable 0x7f30a6127fc0 but 0x7f30b8719a80 has focus",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::enableSurface(wl_surface*) Trying to enable 0x7f30b218fba0 but 0x7f30b61388c0 has focus",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::enableSurface(wl_surface*) Trying to enable 0x7f30b218fd80 but 0x7f30b849b020 has focus",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::enableSurface(wl_surface*) Trying to enable 0x7f30b8719a80 but 0x7f30d59b0040 has focus",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f30a6601580 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f9c13104420 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7fb8e8c9ef60 but 0x0 is focused",
+   "WARN quickshell.io.fileview: got operation finished from dropped operation qs::io::FileViewOperation(0x7fa6d8da8a00)",
+   "WARN quickshell.io.fileview: got operation finished from dropped operation qs::io::FileViewOperation(0x7fa6d8dddbc0)",
+   "WARN quickshell.io.fileview: got operation finished from dropped operation qs::io::FileViewOperation(0x7fa6d8df53c0)",
+   "WARN quickshell.io.fileview: got operation finished from dropped operation qs::io::FileViewOperation(0x7fa6d8ecdbe0)",
+   "WARN quickshell.io.fileview: got operation finished from dropped operation qs::io::FileViewOperation(0x7fe321fd27e0)",
+   "WARN quickshell.io.fileview: got operation finished from dropped operation qs::io::FileViewOperation(0x7fe339bac9c0)",
+   "WARN quickshell.io.fileview: got operation finished from dropped operation qs::io::FileViewOperation(0x7fe339bacc40)",
+   "WARN quickshell.io.fileview: got operation finished from dropped operation qs::io::FileViewOperation(0x7fe339bace20)",
+   "WARN quickshell.io.socket: Socket error for Socket_QML_287(0x7fa6b964de80) QLocalSocket::ServerNotFoundError",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f1c15c8df00 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f2f2532f240 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f3078280f00 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f3086b24300 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f3089d07ec0 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f3089e4ad40 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f3089e4afe0 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f308a375b40 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f30a65fd220 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f3ed69450c0 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f7915c86f00 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f8321c8bf00 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7fa01da89f00 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7faba9d14240 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7fcf42afd240 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7fd5a611d240 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7fdc0d7121e0 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7ff3cfc9af00 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f0e123010c0 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f11172f91e0 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f3086bbb340 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f3086e96620 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f30a9c381c0 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f30b8719a80 but 0x7f30b84c8d80 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f30b8719a80 but 0x7f30d5a41620 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f30b8719a80 but 0x7f30d5a41740 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f4b30adf240 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::enableSurface(wl_surface*) Trying to enable 0x7f30a6321a20 but 0x7f30b84c8d80 has focus",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::enableSurface(wl_surface*) Trying to enable 0x7f30a9b7f320 but 0x7f30d5a41740 has focus",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::enableSurface(wl_surface*) Trying to enable 0x7f30b1f47b20 but 0x7f30d5a41620 has focus",
+   "WARN quickshell.hyprland.ipc: Dispatch request \"hl.dsp.focus({ window = \\\"address:0x0\\\" })\" failed with error \"warning: =[C]:-1: hl.focus: window not found\"",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f30a66027c0 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7f57f4e65f60 but 0x0 is focused",
+   "WARN qt.qpa.wayland.textinput: virtual void QtWaylandClient::QWaylandTextInputv3::disableSurface(wl_surface*) Trying to disable 0x7fbd3b31f180 but 0x0 is focused",
+   "WARN quickshell.io.fileview: got operation finished from dropped operation qs::io::FileViewOperation(0x7f4b9be053c0)",
+   "WARN quickshell.io.fileview: got operation finished from dropped operation qs::io::FileViewOperation(0x7f4b9be055a0)",
+   "WARN quickshell.io.fileview: got operation finished from dropped operation qs::io::FileViewOperation(0x7f4b9bed7b40)",
+   "WARN quickshell.io.fileview: got operation finished from dropped operation qs::io::FileViewOperation(0x7f4b9bed7be0)",
+   "WARN quickshell.io.fileview: got operation finished from dropped operation qs::io::FileViewOperation(0x7faa909b4f00)",
+   "WARN quickshell.io.fileview: got operation finished from dropped operation qs::io::FileViewOperation(0x7faa909b4fa0)",
+   "WARN quickshell.io.fileview: got operation finished from dropped operation qs::io::FileViewOperation(0x7faaaa1a9b00)",
+   "WARN quickshell.io.fileview: got operation finished from dropped operation qs::io::FileViewOperation(0x7faaaa1a9f60)",
+   "WARN quickshell.io.socket: Socket error for Socket_QML_287(0x7f4b7ac4e300) QLocalSocket::ServerNotFoundError"
+  ],
+  "not_answering": [
+   {
+    "wall": 1794638243.9593818,
+    "pid": 7757,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794638259.088016,
+    "pid": 8359,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794638281.2726429,
+    "pid": 9034,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794638281.2756789,
+    "pid": 9035,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794638299.425484,
+    "pid": 9630,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794638320.5752532,
+    "pid": 10266,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794638336.711036,
+    "pid": 10810,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794638336.7680867,
+    "pid": 10811,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794638453.7742183,
+    "pid": 16910,
+    "text": "An application daily 42002 - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794638516.9293268,
+    "pid": 6100,
+    "text": "An application tone - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794638516.9297745,
+    "pid": 6102,
+    "text": "An application tone - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794638681.499976,
+    "pid": 12866,
+    "text": "An application tone - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794638778.0662665,
+    "pid": 17182,
+    "text": "An application tone - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794639514.1409087,
+    "pid": 23677,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794639514.14113,
+    "pid": 23678,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794640067.9181101,
+    "pid": 7834,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794640085.0519767,
+    "pid": 8426,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794640108.0165286,
+    "pid": 9140,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794640123.1425219,
+    "pid": 9633,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794640146.3295355,
+    "pid": 10210,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794640163.457419,
+    "pid": 10767,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794640280.474516,
+    "pid": 16926,
+    "text": "An application daily 42002 - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794640280.4776976,
+    "pid": 16927,
+    "text": "An application daily 42002 - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794640311.3712485,
+    "pid": 6026,
+    "text": "An application tone - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794640311.3715236,
+    "pid": 6027,
+    "text": "An application tone - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794640478.1173787,
+    "pid": 12915,
+    "text": "An application tone - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794640478.1176739,
+    "pid": 12939,
+    "text": "An application tone - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794640580.326852,
+    "pid": 17386,
+    "text": "An application tone - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794640580.3270013,
+    "pid": 17387,
+    "text": "An application tone - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794641320.0578756,
+    "pid": 23615,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794641320.0583756,
+    "pid": 23633,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794641865.197105,
+    "pid": 7855,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794641865.1975033,
+    "pid": 7859,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794641882.3727093,
+    "pid": 8486,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794641882.3731952,
+    "pid": 8489,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794641903.5273156,
+    "pid": 9145,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794641920.664757,
+    "pid": 9666,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794641942.4983275,
+    "pid": 10216,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794641959.664675,
+    "pid": 10819,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794642075.599753,
+    "pid": 16913,
+    "text": "An application daily 42002 - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794642108.7648141,
+    "pid": 6097,
+    "text": "An application tone - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794642108.7650568,
+    "pid": 6100,
+    "text": "An application tone - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794642109.7786317,
+    "pid": 6131,
+    "text": "An application tone - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794642238.8205488,
+    "pid": 11821,
+    "text": "An application tone - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794642336.788014,
+    "pid": 16102,
+    "text": "An application tone - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794642336.7883022,
+    "pid": 16121,
+    "text": "An application tone - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794643074.382104,
+    "pid": 23594,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   },
+   {
+    "wall": 1794643074.3827512,
+    "pid": 23595,
+    "text": "An application Blank page - browser-cef is not responding.\nWhat do you want to do with it? --buttons Terminate;Wait"
+   }
+  ],
+  "journal": {
+   "(coredump-worker): PIDFD validation failed: No such process": 6,
+   "(coredump-worker): (binary)": 3,
+   "kernel: ataN.N: Check power mode failed (err_mask=NxN)": 3,
+   "foot: wayland: failed to read events from the Wayland socket: Broken pipe": 3,
+   "foot: wayland: failed to flush wayland socket: Broken pipe": 3,
+   "(coredump-worker): Process N (hyprsunset) of user N dumped core.\n\nStack trace of thread N:\n#N  NxNfcacNaNc n/a (libc.so.N + NxNaNc)\n#N  NxNfcacNeNdN raise (libc.so.N + NxNeNdN)\n#N": 1,
+   "(coredump-worker): Process N (xdg-desktop-por) of user N dumped core.\n\nStack trace of thread N:\n#N  NxNfNceN n/a (libwayland-client.so.N + NxN)\n#N  NxNfNceNad n/a (libwayland-clie": 1,
+   "(coredump-worker): Process N (Xwayland) of user N dumped core.\n\nStack trace of thread N:\n#N  NxNfNdceNaNc n/a (libc.so.N + NxNaNc)\n#N  NxNfNdceNeNdN raise (libc.so.N + NxNeNdN)\n#N": 1,
+   "systemd: basic.target: Found ordering cycle: graphical-session.target/stop after foot-server.socket/stop after sockets.target/stop after basic.target/stop - after graphi": 2,
+   "kernel: virt/tdx: TDX not supported by the host platform": 3,
+   "dbus-broker-launch: Ignoring duplicate name 'org.gnome.keyring.PrivatePrompter' in service file '/usr/share/dbus-N/services/org.gnome.keyring.PrivatePrompter.service'": 3,
+   "dbus-broker-launch: Ignoring duplicate name 'org.gnome.keyring.SystemPrompter' in service file '/usr/share/dbus-N/services/org.gnome.keyring.SystemPrompter.service'": 3,
+   "sddm-helper: gkr-pam: couldn't unlock the login keyring.": 3,
+   "systemd: basic.target: Found ordering cycle: graphical-session-pre.target/stop after graphical-session.target/stop after foot-server.socket/stop after sockets.target/sto": 2,
+   "(coredump-worker): Process N (hyprsunset) of user N dumped core.\n\nStack trace of thread N:\n#N  NxNffNaNc n/a (libc.so.N + NxNaNc)\n#N  NxNffNeNdN raise (libc.so.N + NxNeNdN)\n#N  Nx": 1,
+   "(coredump-worker): Process N (xdg-desktop-por) of user N dumped core.\n\nStack trace of thread N:\n#N  NxNfbNcbNedN n/a (libwayland-client.so.N + NxN)\n#N  NxNfbNcbNedNad n/a (libwayl": 1,
+   "(coredump-worker): Process N (start-hyprland) of user N dumped core.\n\nStack trace of thread N:\n#N  NxNffNbbNaNc n/a (libc.so.N + NxNaNc)\n#N  NxNffNbbNeNdN raise (libc.so.N + NxNeN": 1,
+   "(coredump-worker): Process N (xdg-desktop-por) of user N dumped core.\n\nStack trace of thread N:\n#N  NxNfNbN n/a (libwayland-client.so.N + NxN)\n#N  NxNfNbNad n/a (libwayland-client": 1,
+   "(coredump-worker): Process N (hyprsunset) of user N dumped core.\n\nStack trace of thread N:\n#N  NxNfbNfaaNaNc n/a (libc.so.N + NxNaNc)\n#N  NxNfbNfaaNeNdN raise (libc.so.N + NxNeNdN": 1,
+   "(coredump-worker): Process N (start-hyprland) of user N dumped core.\n\nStack trace of thread N:\n#N  NxNfNfNcNaNc n/a (libc.so.N + NxNaNc)\n#N  NxNfNfNcNeNdN raise (libc.so.N + NxNeN": 1,
+   "(coredump-worker): Process N (hyprsunset) of user N dumped core.\n\nStack trace of thread N:\n#N  NxNfeNbaNaNc n/a (libc.so.N + NxNaNc)\n#N  NxNfeNbaNeNdN raise (libc.so.N + NxNeNdN)\n": 1,
+   "(coredump-worker): Process N (hyprsunset) of user N dumped core.\n\nStack trace of thread N:\n#N  NxNfNbNaNaNc n/a (libc.so.N + NxNaNc)\n#N  NxNfNbNaNeNdN raise (libc.so.N + NxNeNdN)\n": 1,
+   "(coredump-worker): Process N (xdg-desktop-por) of user N dumped core.\n\nStack trace of thread N:\n#N  NxNffNbNaN n/a (libwayland-client.so.N + NxN)\n#N  NxNffNbNaNad n/a (libwayland-": 1,
+   "(coredump-worker): Process N (hyprsunset) of user N dumped core.\n\nStack trace of thread N:\n#N  NxNfNdaNaNc n/a (libc.so.N + NxNaNc)\n#N  NxNfNdaNeNdN raise (libc.so.N + NxNeNdN)\n#N": 1,
+   "(coredump-worker): Process N (xdg-desktop-por) of user N dumped core.\n\nStack trace of thread N:\n#N  NxNfNfNeN n/a (libwayland-client.so.N + NxN)\n#N  NxNfNfNeNad n/a (libwayland-cl": 1,
+   "(coredump-worker): Process N (hyprsunset) of user N dumped core.\n\nStack trace of thread N:\n#N  NxNfNeNaNaNc n/a (libc.so.N + NxNaNc)\n#N  NxNfNeNaNeNdN raise (libc.so.N + NxNeNdN)\n": 1,
+   "(coredump-worker): Process N (xdg-desktop-por) of user N dumped core.\n\nStack trace of thread N:\n#N  NxNfNdN n/a (libwayland-client.so.N + NxN)\n#N  NxNfNdNad n/a (libwayland-client": 1
+  },
+  "stuck": [
+   "after wallpaper: browser-cef: tone",
+   "after search: quickshell:islandAway",
+   "after wallpaper: browser-cef: tone",
+   "after wallpaper: browser-cef: tone",
+   "after wallpaper: browser-cef: tone",
+   "after search: quickshell:islandAway",
+   "after wallpaper: browser-cef: tone",
+   "after wallpaper: browser-cef: tone",
+   "after wallpaper: browser-cef: tone",
+   "after wallpaper: browser-cef: tone",
+   "after wallpaper: browser-cef: tone"
+  ]
+ },
+ "not_run": [],
+ "hardware_only": [
+  "Wi-Fi",
+  "the touchpad (gestures, a pinch)",
+  "the camera",
+  "the microphone heard",
+  "real sleep (a lid)",
+  "the battery"
+ ],
+ "variant": "",
+ "lang_run": null,
+ "parts": [
+  {
+   "name": "starts",
+   "repeat": 0,
+   "from": "daily-base, just saved",
+   "outcome": "measured"
+  },
+  {
+   "name": "tasks",
+   "repeat": 0,
+   "from": "daily-base",
+   "outcome": "measured"
+  },
+  {
+   "name": "rest",
+   "repeat": 0,
+   "from": "daily-base",
+   "outcome": "measured"
+  },
+  {
+   "name": "starts from power on",
+   "repeat": 0,
+   "from": "daily-base",
+   "outcome": "measured"
+  },
+  {
+   "name": "starts",
+   "repeat": 1,
+   "from": "daily-base",
+   "outcome": "measured"
+  },
+  {
+   "name": "tasks",
+   "repeat": 1,
+   "from": "daily-base",
+   "outcome": "measured"
+  },
+  {
+   "name": "rest",
+   "repeat": 1,
+   "from": "daily-base",
+   "outcome": "measured"
+  },
+  {
+   "name": "starts from power on",
+   "repeat": 1,
+   "from": "daily-base",
+   "outcome": "measured"
+  },
+  {
+   "name": "starts",
+   "repeat": 2,
+   "from": "daily-base",
+   "outcome": "measured"
+  },
+  {
+   "name": "tasks",
+   "repeat": 2,
+   "from": "daily-base",
+   "outcome": "measured"
+  },
+  {
+   "name": "rest",
+   "repeat": 2,
+   "from": "daily-base",
+   "outcome": "measured"
+  },
+  {
+   "name": "starts from power on",
+   "repeat": 2,
+   "from": "daily-base",
+   "outcome": "measured"
+  }
+ ],
+ "infra": [],
+ "retries": [
+  {
+   "what": "unlock",
+   "part": "tasks",
+   "first": "not unlocked within 30 s of the press",
+   "second": "worked"
+  },
+  {
+   "what": "sign-in",
+   "part": "starts from power on",
+   "first": "not usable within 120 s of the press",
+   "second": "worked"
+  },
+  {
+   "what": "sign-in",
+   "part": "starts from power on",
+   "first": "not usable within 120 s of the press",
+   "second": "worked"
+  },
+  {
+   "what": "sign-in",
+   "part": "starts from power on",
+   "first": "not usable within 120 s of the press",
+   "second": "worked"
+  },
+  {
+   "what": "unlock",
+   "part": "tasks",
+   "first": "not unlocked within 30 s of the press",
+   "second": "worked"
+  },
+  {
+   "what": "sign-in",
+   "part": "starts from power on",
+   "first": "not usable within 120 s of the press",
+   "second": "worked"
+  },
+  {
+   "what": "sign-in",
+   "part": "starts from power on",
+   "first": "not usable within 120 s of the press",
+   "second": "worked"
+  },
+  {
+   "what": "sign-in",
+   "part": "starts from power on",
+   "first": "not usable within 120 s of the press",
+   "second": "worked"
+  },
+  {
+   "what": "unlock",
+   "part": "tasks",
+   "first": "not unlocked within 30 s of the press",
+   "second": "worked"
+  },
+  {
+   "what": "sign-in",
+   "part": "starts from power on",
+   "first": "not usable within 120 s of the press",
+   "second": "worked"
+  },
+  {
+   "what": "sign-in",
+   "part": "starts from power on",
+   "first": "not usable within 120 s of the press",
+   "second": "worked"
+  },
+  {
+   "what": "sign-in",
+   "part": "starts from power on",
+   "first": "not usable within 120 s of the press",
+   "second": "worked"
+  }
+ ],
+ "isolated": true,
+ "tacit": "1.2.15-1",
+ "hyprland": "v0.57.0",
+ "language": {
+  "lang": "en_GB.UTF-8",
+  "layout": "us",
+  "active": "English (US)"
+ },
+ "gpu": "bochs-drm",
+ "disk_start": {
+  "ok": true,
+  "mb": {
+   "caches (home)": 10.9,
+   "Thyris's data": 40.5,
+   "journal": 24.0,
+   "package cache": 128.0,
+   "crash dumps": 20.8,
+   "shell logs": 0.5
+  },
+  "used_mb": 15214.7,
+  "outcome": "worked"
+ },
+ "minutes": 91.1,
+ "disk_end": {
+  "ok": true,
+  "mb": {
+   "caches (home)": 11.1,
+   "Thyris's data": 193.9,
+   "journal": 24.0,
+   "package cache": 128.0,
+   "crash dumps": 56.3,
+   "shell logs": 1.1
+  },
+  "used_mb": 16209.0,
+  "outcome": "worked"
+ },
+ "left_as_found": "daily-start loaded",
+ "ended": "2026-11-14T08:06:08+0000"
+}

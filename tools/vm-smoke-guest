@@ -37,10 +37,15 @@ qs_pid() {
 	return 1
 }
 qs_log() { echo "/run/user/$uid/quickshell/by-pid/$1/log.log"; }
-# a log's warnings and errors, without their times, and with QML line:column numbers taken out, so the same error is
-# the same line before and after an update that moved it; QML errors are the ones at a .qml location
-errors() { grep -aE '\b(WARN|ERROR|CRIT|FATAL)\b' "$1" 2>/dev/null | sed -E 's/^[0-9-]+ [0-9:.]+ +//; s/(\.qml):[0-9]+(:[0-9]+)?/\1:N/g' | sort -u; }
-qml_errors() { grep -aE '\.qml:[0-9N]+' | grep -avE 'Binding loop detected' ; }
+# a log's warnings and errors, without their times, and with QML line:column numbers (file.qml:12:5 and Quickshell's
+# @file.qml[12:5]), QML's own object numbers (Socket_QML_273) and memory addresses taken out, so the same error is the
+# same line before and after an update that moved it (Quickshell's "got operation finished from dropped operation
+# qs::io::FileViewOperation(0x7f3b2720e1e0)" has an address of its own in every process); QML errors are the ones at a
+# .qml location
+errors() { grep -aE '\b(WARN|ERROR|CRIT|FATAL)\b' "$1" 2>/dev/null | sed -E 's/^[0-9-]+ [0-9:.]+ +//; s/(\.qml):[0-9]+(:[0-9]+)?/\1:N/g; s/(\.qml)\[[0-9]+:[0-9]+\]/\1[N]/g; s/_QML_[0-9]+/_QML_N/g; s/0x[0-9a-fA-F]+/0x…/g' | sort -u; }
+# not errors: a binding loop, and a thumbnail not made yet (ThumbnailImage shows the cached one, and on a first view,
+# before it exists, Qt says "Cannot open" while it is made, then it shows; every first view of a picture said so)
+qml_errors() { grep -aE '\.qml:[0-9N]+' | grep -avE 'Binding loop detected|ThumbnailImage: Cannot open: file://[^ ]*/\.cache/thumbnails/' ; }
 
 # is <pid> Thyris (its browser, or a process under it)
 thyris() {
@@ -91,11 +96,14 @@ shell-errors)
 	;;
 update)
 	# [tacit] pointed at the test repo on the cloud machine (the live database and this release's packages, unsigned),
-	# then what Settings' Check for updates and Restart run: the download, and the install armed for the next start
+	# then what Settings' Check for updates and Restart run: the download, and the install armed for the next start.
+	# SigLevel Never, not Optional: the live repo's tacit.db.sig stays in the sync folder when the test repo has none
+	# (pacman 7.1 keeps it on a 404), and Optional checked the test database against it ("signature from Tacit packages
+	# is invalid"): the download failed on every test disk that had checked the live repo before
 	url=$1
 	[ -f "$state/pacman.conf" ] || cp /etc/pacman.conf "$state/pacman.conf"
 	awk -v url="$url" '/^\[/ { in_tacit = ($0 == "[tacit]") } in_tacit && /^(SigLevel|Server|Include)/ { next }
-		{ print } $0 == "[tacit]" { print "SigLevel = Optional TrustAll"; print "Server = " url }' "$state/pacman.conf" > /etc/pacman.conf
+		{ print } $0 == "[tacit]" { print "SigLevel = Never"; print "Server = " url }' "$state/pacman.conf" > /etc/pacman.conf
 	/usr/lib/tacit/tacit-fetch-updates now || { echo "fail update: the download failed ($?)"; exit 1; }
 	pacman -Qu tacit 2>/dev/null || { echo "fail update: no new tacit waits after the download"; exit 1; }
 	/usr/lib/tacit/tacit-update now || { echo "fail update: the install was not armed ($(tail -3 /var/lib/tacit/download.log | tr '\n' ' '))"; exit 1; }
@@ -140,8 +148,16 @@ plugins)
 		|| echo "fail plugins: hyprctl plugins list has no tacit-frame: $(tr '\n' ' ' <<<"$out" | cut -c1-300)"
 	;;
 volume-set)
+	# up in steps of 5 %: the shell takes back a rise over its "Largest jump" (10 % unless changed) at once, so one write
+	# from the VM's 40 % to 90 % left it at 40 %, and the volume key's ten presses could not reach 100 from there
 	need_session volume-100
-	as_person wpctl set-volume @DEFAULT_AUDIO_SINK@ "$1"
+	for i in $(seq 40); do
+		now=$(as_person wpctl get-volume @DEFAULT_AUDIO_SINK@ | awk '{ print $2 }')
+		next=$(python3 -c 'import sys; n, w = map(float, sys.argv[1:]); print(f"{min(w, n + 0.05) if w > n else w:.2f}")' "$now" "$1")
+		as_person wpctl set-volume @DEFAULT_AUDIO_SINK@ "$next"
+		[ "$next" = "$(printf '%.2f' "$1")" ] && break
+		sleep 0.3
+	done
 	;;
 volume)
 	need_session volume-100
@@ -150,7 +166,9 @@ volume)
 thyris-sound)
 	# a page that plays a 440 Hz tone at load (autoplay allowed for this start, as a click would), in a Thyris of its own
 	need_session thyris-sound
-	pkill -u "$uid" -f '^/usr/lib/tacit/thyris/browser' && sleep 2
+	# the main process only, as a quit does: matching browser-page too made Thyris crash on purpose (SIGTRAP: its GPU
+	# process and zygote gone under it) and left its window with Hyprland's "not responding" (daily-bench-guest quit_app)
+	pkill -u "$uid" -f '^/usr/lib/tacit/thyris/browser( |$)' && sleep 2
 	page=$state/tone.html
 	cat > "$page" <<'EOF'
 <!doctype html><title>tone</title><p>a 440 Hz tone<script>
@@ -173,7 +191,7 @@ for s in json.load(sys.stdin):
 			| python3 -c 'import array, sys; a = array.array("h", sys.stdin.buffer.read()); print(round(max(map(abs, a), default=0) / 32768, 3))')
 		break
 	done
-	pkill -u "$uid" -f '^/usr/lib/tacit/thyris/browser'
+	pkill -u "$uid" -f '^/usr/lib/tacit/thyris/browser( |$)'
 	if [ -n "${ours:-}" ] && python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) > 0.05 else 1)' "$level"; then
 		echo "pass thyris-sound: a playback stream from Thyris, $ours, and the speaker's loudest sample $level"
 	else

@@ -1,0 +1,12 @@
+{
+ "version": "1.2.15",
+ "args": [
+  "1.2.15",
+  "--repeat",
+  "3",
+  "--record",
+  "tools/daily-bench-fixtures/vm-1.2.15-2026-11-14"
+ ],
+ "recorded": "2026-11-14T09:06:30+0100",
+ "from": "a real run on the test VM"
+}

@@ -149,6 +149,11 @@ class Person:
         and password asks are refused to it)"""
         env = " ".join(f"{k}={sh(v)}" for k, v in (extra or {}).items())
         cmd = f"{'env ' + env + ' ' if env else ''}{' '.join(sh(a) for a in argv)} >{sh(log)} 2>&1"
+        # the log made here and given to the person: STATE is root's, and the person's shell could not create it, so
+        # the redirect failed and the command never ran (the check for updates "did not start" in every real run)
+        if log != "/dev/null":
+            open(log, "w").close()
+            os.chown(log, self.uid, -1)
         return self.dispatch(f"hl.dsp.exec_cmd([==[{cmd}]==])")
 
     def which(self, name):
@@ -865,7 +870,11 @@ def quit_app(person, app):
             person.dispatch(f'hl.dsp.focus({{ window = "address:{c["address"]}" }})')
             person.dispatch("hl.dsp.window.close()")
     elif app == "thyris":
-        subprocess.run(["pkill", "-u", str(person.uid), "-f", "^/usr/lib/tacit/thyris/browser"])
+        # its main process only, as a quit does: the pattern without "( |$)" matched browser-page too, the GPU process
+        # and the zygote died under a browser still running, which could not start its GPU process again and crashed on
+        # purpose (SIGTRAP, IntentionallyCrashBrowserForUnusableGpuProcess), its window left with Hyprland's "not
+        # responding" over it: every Thyris crash, not-answering and stuck surface of the first real runs
+        subprocess.run(["pkill", "-u", str(person.uid), "-f", "^/usr/lib/tacit/thyris/browser( |$)"])
     elif app == "settings":
         person.ipc(f"{person.shell}/tacit-settings.qml", "call", "settingsApp", "close")
     else:
@@ -946,7 +955,10 @@ def step_preflight(version):
     if not os.path.exists(keep):
         json.dump({"wallpaper": person.config().get("background", {}).get("wallpaperPath", "")}, open(keep, "w"))
     step_mark()
-    out(ok=have.split("-")[0] == version, tacit=have, user=person.user, shell=person.shell,
+    # the screen's driver: QEMU's virtio-vga (virtio_gpu) does not come back from sleep, its plain VGA (bochs-drm) does
+    gpu = sorted({os.path.basename(os.path.realpath(f"{c}/device/driver")) for c in glob.glob("/sys/class/drm/card[0-9]")
+                  if os.path.exists(f"{c}/device/driver")})
+    out(ok=have.split("-")[0] == version, tacit=have, user=person.user, shell=person.shell, gpu=",".join(gpu),
         hyprland=(person.hypr("version") or {}).get("tag", ""), language=language(person),
         why=None if have.split("-")[0] == version else f"the test computer has tacit {have or 'none'}, not {version}")
 
@@ -1258,14 +1270,37 @@ def step_files_preview():
     for name in ("picture.png", "document.pdf"):
         with open(f"{STATE}/{name}", "rb") as src, open(f"{d}/{name}", "wb") as dst:
             dst.write(src.read())
-    subprocess.run(["chown", "-R", f"{person.uid}:", d])
+    subprocess.run(["chown", "-R", f"{person.user}:", d])
     back, _ = empty_workspace(person)
     res, why = {}, []
+
+    def in_files(img):
+        # only Files' window: the wallpaper task's test pattern, left behind it by design, has the same colours in
+        # quarters of the screen, and the search took its magenta for the picture's (a box of 50 % of the screen)
+        win = next((c for c in person.hypr("clients") or [] if c.get("class") == "org.quickshell" and c.get("title") == "Files"), None)
+        mon = (person.hypr("monitors") or [{}])[0]
+        if not img or not win or not mon.get("width"):
+            return img
+        w, h, data = img
+        k = w / mon["width"]
+        x0, y0 = max(0, int((win["at"][0] - mon.get("x", 0)) * k)), max(0, int((win["at"][1] - mon.get("y", 0)) * k))
+        x1, y1 = min(w, int(x0 + win["size"][0] * k)), min(h, int(y0 + win["size"][1] * k))
+        out_ = bytearray(len(data))
+        for y in range(y0, y1):
+            out_[(y * w + x0) * 3:(y * w + x1) * 3] = data[(y * w + x0) * 3:(y * w + x1) * 3]
+        return w, h, bytes(out_)
+
     for name, grid, key in (("picture.png", PICTURE_GRID, "picture"), ("document.pdf", [[c] for c in PDF_BANDS], "pdf")):
         t0 = now()
         person.ipc(person.shell, "call", "files", "reveal", f"{d}/{name}", timeout=5)
-        seen = poll(lambda: find_pattern(person.shot(), grid, PREVIEW_AREA)[0] and now(), 20, every=0.2)
-        found, worst, area = find_pattern(settled(person), grid, PREVIEW_AREA)
+        seen = poll(lambda: find_pattern(in_files(person.shot()), grid, PREVIEW_AREA)[0] and now(), 4, every=0.2)
+        if not seen and not res.get("space"):
+            # Files shows its preview column by itself only in a wide window (1240 px, or 900 x 800); the one reveal
+            # opens is smaller, and a person presses Space for it: what Space runs (files act preview), once
+            person.ipc(person.shell, "call", "files", "act", "preview", timeout=5)
+            res["space"] = True
+            seen = poll(lambda: find_pattern(in_files(person.shot()), grid, PREVIEW_AREA)[0] and now(), 16, every=0.2)
+        found, worst, area = find_pattern(in_files(settled(person)), grid, PREVIEW_AREA)
         res[f"{key}_ms"] = ms(t0, seen) if seen and found else None
         res[f"{key}_area"] = area
         if not found:
@@ -1728,7 +1763,7 @@ def probe(shell, work, env, want=lambda st: False, timeout=20, popen=None):
 
 def person_probe(person, want):
     os.makedirs(f"{STATE}/probe", exist_ok=True)
-    subprocess.run(["chown", "-R", f"{person.uid}:", f"{STATE}/probe"])
+    subprocess.run(["chown", "-R", f"{person.user}:", f"{STATE}/probe"])
     popen = lambda argv, env: subprocess.Popen(person.argv(["env", "-i", *[f"{k}={v}" for k, v in env.items()], *argv]),
                                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     r = probe(person.shell, f"{STATE}/probe", person.env, want, popen=popen)
@@ -1845,7 +1880,7 @@ def step_lived_in_home(settings, day):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         open(path + ".daily", "w").write(text)
         os.replace(path + ".daily", path)
-    subprocess.run(["chown", "-R", f"{person.uid}:", f"{person.home}/.config"])
+    subprocess.run(["chown", "-R", f"{person.user}:", f"{person.home}/.config"])
     open(mirrors, "w").write(f"# my own mirror\nServer = https://archive.archlinux.org/repos/{day}/$repo/os/$arch\n")
     out(ok=True, settings=os.path.basename(settings), maxAllowed=want["maxAllowed"], kbLayout=want["kbLayout"],
         idle_packaged=packaged)
@@ -1926,7 +1961,7 @@ def step_lived_in_restore():
         else:
             open(f, "w").write(text)
             if f.startswith(person.home):
-                subprocess.run(["chown", f"{person.uid}:", f])
+                subprocess.run(["chown", f"{person.user}:", f])
     os.remove(keep)
     out(ok=True, restored=True)
 

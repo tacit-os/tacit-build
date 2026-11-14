@@ -41,7 +41,9 @@ check for updates whose mirror did not answer) is reported apart, as outside Tac
 
 The test account's password (for the sign-in, the lock, a sleep's wake and a restart) is read from TACIT_VM_PASSWORD
 here, or ~/tacit-vm/password on the cloud machine; without it those parts are not run, and the scorecard says so.
-TACIT_VM_KEYS=de|gb when the VM types German or British.
+TACIT_VM_KEYS=de|gb when the VM types German or British. VM_VGA=std when the VM was started with it (VM_VGA=std vm disk):
+the run's own restarts keep it. QEMU's virtio-vga, the default, does not come back from sleep, so sleep is measured only
+on a VM started so.
 
 Written to out/x86_64/: daily-<version>.json (every number and check), daily-<version>.md (the scorecard, with the
 comparison against the release before); a second run of the same version is daily-<version>.2.*, and pairs of runs
@@ -221,7 +223,9 @@ class Bench:
         except subprocess.TimeoutExpired:
             code, o, e = 124, "", f"tools/vm {args[0]}: no answer in {timeout} s"
         if self.recording:      # --record: every exchange with the VM, for tools/daily-bench-test to replay
-            self.recording.write(json.dumps({"argv": [str(a) for a in args], "code": code, "out": o, "err": e,
+            # the test account's password typed is kept as "replayed", the one the replay types: a recording is committed
+            argv = [("replayed" if self.pw and str(a) == self.pw else str(a)) for a in args]
+            self.recording.write(json.dumps({"argv": argv, "code": code, "out": o, "err": e,
                                              "s": round(time.time() - t, 2), "part": self.part, "repeat": self.rep}) + "\n")
             self.recording.flush()
         return code, o, e
@@ -454,6 +458,7 @@ class Bench:
         # a lived-in run starts on the release before, and updates to this one
         p = self.guest("preflight", self.lived_in or self.rec["version"])
         self.rec["tacit"], self.rec["hyprland"], self.rec["language"] = p.get("tacit"), p.get("hyprland"), p.get("language")
+        self.rec["gpu"] = p.get("gpu")
         if outcome(p) != "worked":
             self.rec["error"] = p.get("why")
             self.save()
@@ -464,6 +469,47 @@ class Bench:
             self.set_language()
         if self.lived_in:
             self.lived_in_update()
+        # a test disk starts at the boot lock (SDDM signs the account in, the shell holds the lock until the password),
+        # and the known state every part starts from is a desktop: the password typed there first, as a person does at
+        # a start. A language or a lived-in run has signed in already, through its own restart. Without this the short
+        # run waited for a desktop that never came and saved its known state at the lock.
+        if self.guest("boot-state").get("bootlock"):
+            if not self.pw:
+                self.rec["error"] = "the test computer is at its sign-in screen, and there is no password to sign in with"
+                self.save()
+                sys.exit(f"daily-bench: {self.rec['error']} (TACIT_VM_PASSWORD, or ~/tacit-vm/password on the cloud machine)")
+            self.relayout()
+            u = self.press("enter-usable", lambda: (self.type(self.pw), self.key("ret")), 120)
+            if outcome(u) == "failed":      # a dropped key while typing: once more, both kept
+                self.key("esc")
+                u2 = self.press("enter-usable", lambda: (self.type(self.pw), self.key("ret")), 120)
+                self.rec["retries"].append({"what": "sign-in", "part": "preflight", "first": u.get("why"),
+                                            "second": "worked" if outcome(u2) == "worked" else u2.get("why")})
+                u = u2
+            if outcome(u) != "worked":
+                self.rec["error"] = f"could not sign in at the boot lock: {u.get('why')}"
+                self.save()
+                sys.exit(f"daily-bench: {self.rec['error']}")
+            self.log("signed in at the boot lock")
+        # not at the boot lock: a computer left alone locks itself and turns its screen off (dpms), and the known state is
+        # a desktop in use, so it is woken (Shift, a hand on the keyboard), and unlocked once its lock is drawn. A run
+        # started on such a computer saved a locked, dark known state, and every part after it could not be measured
+        # (grim captures nothing then). Signed in at the boot lock just now, the desktop is lit and open already.
+        elif not ((d := self.guest("desktop")).get("drawn")) or d.get("locked"):
+            self.key("shift")
+            self.until(lambda: self.guest("desktop").get("drawn"), 20, every=1)
+            if self.guest("desktop").get("locked"):
+                if not self.pw:
+                    self.rec["error"] = "the test computer is locked, and there is no password to unlock it with"
+                    self.save()
+                    sys.exit(f"daily-bench: {self.rec['error']} (TACIT_VM_PASSWORD, or ~/tacit-vm/password on the cloud machine)")
+                time.sleep(2)       # the lock's field ready after its fade-in: keys before it are lost
+                u = self.unlock()
+                if outcome(u) != "worked":
+                    self.rec["error"] = f"could not unlock the test computer: {u.get('why')}"
+                    self.save()
+                    sys.exit(f"daily-bench: {self.rec['error']}")
+            self.log("woken and unlocked: the computer had locked itself and turned its screen off")
         self.relayout()
         self.guest("sampler", "start")
         self.guest("ready", timeout=240)
@@ -659,6 +705,14 @@ class Bench:
 
     def sleep_wake(self, task="sleep", measure=True):
         """systemctl suspend; QEMU says it sleeps; QMP's system_wakeup; the desktop answers again, through the lock"""
+        # QEMU's virtio-vga does not come back from sleep: after the wake its queue never answers, Hyprland waits on it
+        # ("Display output is not active", the kernel's hung-task report in virtio_gpu_queue_fenced_ctrl_buffer), and a
+        # restart after it never resets the computer; 1.2.14 and 1.2.15 alike (2026-11-14). QEMU's plain VGA wakes
+        # (VM_VGA=std vm disk). On virtio sleep is not tried: it left every task after it on a dead screen.
+        if "virtio_gpu" in str(self.rec.get("gpu") or ""):
+            r = {"outcome": "unmeasured", "why": "could not measure: this VM's screen (QEMU's virtio-vga) does not come back "
+                                                 "from sleep; start the test disk with VM_VGA=std vm disk"}
+            return self.task(task, r) if task in TASKS else r
         self.guest("suspend")
         if not self.until(lambda: self.vm("status")[1].strip() == "suspended", 60, every=1):
             r = {"ok": False, "why": "did not happen in 60 s: QEMU saying the computer sleeps, after systemctl suspend"}
@@ -1733,10 +1787,12 @@ def main():
                         + sum((["--suite", s] for s in a["suites"]), []) + (["--lang", a["lang"]] if a["lang"] else [])
                         + (["--suites-only"] if a["suites_only"] else []) + extra
                         + (["--repeat", str(a["repeat"])] if a["repeat"] > 1 else []) + (["--record"] if a["record"] else []))
-        # the run outlasts an ssh session: started apart, then waited for (as tools/vm-smoke does)
+        # the run outlasts an ssh session: started apart, then waited for (as tools/vm-smoke does). VM_VGA goes with it,
+        # for the restarts it makes with vm disk: VM_VGA=std is the screen that comes back from sleep
+        vga = f"VM_VGA={os.environ['VM_VGA']} " if re.fullmatch(r"[a-z]+", os.environ.get("VM_VGA", "")) else ""
         on("cd ~/tacit-vm && tar -xf daily.tar && rm daily.tar && cp daily/vm vm "
            "&& { [ ! -f daily/password ] || mv daily/password password; } "
-           f"&& (setsid nohup bash -c 'cd ~/tacit-vm/daily && python3 ./daily-bench --machine {args} > run.log 2>&1; echo $? > done' "
+           f"&& (setsid nohup bash -c 'cd ~/tacit-vm/daily && {vga}python3 ./daily-bench --machine {args} > run.log 2>&1; echo $? > done' "
            "> /dev/null 2>&1 < /dev/null &)")
         wait = 2
         while on("test -f ~/tacit-vm/daily/done", 120).returncode:

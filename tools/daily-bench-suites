@@ -110,7 +110,7 @@ def step_picker(what, *args):
         os.makedirs(os.path.dirname(conf), exist_ok=True)
         with open(conf, "w") as f:
             f.write(f"screencopy {{\n    custom_picker_binary = {STATE}/pick\n}}\n")
-        subprocess.run(["chown", f"{person.uid}:", conf])
+        subprocess.run(["chown", f"{person.user}:", conf])
     person.run(["systemctl", "--user", "restart", "xdg-desktop-portal-hyprland.service"], 20)
     out(ok=True)
 
@@ -351,7 +351,7 @@ def obs_ready(person):
     g = f"{d}/global.ini"
     if not os.path.exists(g):
         open(g, "w").write("[General]\nFirstRun=true\n")
-    subprocess.run(["chown", "-R", f"{person.uid}:", d])
+    subprocess.run(["chown", "-R", f"{person.user}:", d])
 
 
 def frames(path):
@@ -536,7 +536,7 @@ def step_creator_upload_start():
     dl = f"{person.home}/Downloads"
     os.makedirs(dl, exist_ok=True)
     open(f"{dl}/tacit-daily-upload-4711.txt", "w").write("Tacit Daily upload 4711\n" * 100)
-    subprocess.run(["chown", "-R", f"{person.uid}:", dl])
+    subprocess.run(["chown", "-R", f"{person.user}:", dl])
     for f in glob.glob(f"{STATE}/uploaded-*"):
         os.remove(f)
     c = thyris_page(person, f"http://127.0.0.1:{PORT}/upload.html")
@@ -591,7 +591,7 @@ def step_creator_audio_place():
         w.setsampwidth(2)
         w.setframerate(16000)
         w.writeframes(b"".join(struct.pack("<h", int(12000 * math.sin(2 * math.pi * 440 * i / 16000))) for i in range(16000 * 20)))
-    subprocess.run(["chown", "-R", f"{person.uid}:", dl])
+    subprocess.run(["chown", "-R", f"{person.user}:", dl])
     out(ok=True, path=path)
 
 
@@ -623,7 +623,7 @@ def lo_profile(person):
                        + item("/org.openoffice.Office.Common/Misc", "ShowTipOfTheDay", "false")
                        + item("/org.openoffice.Office.Common/Save/Document", "WarnAlienFormat", "false")
                        + "</oor:items>\n")
-    subprocess.run(["chown", "-R", f"{person.uid}:", f"{person.home}/.config/libreoffice"])
+    subprocess.run(["chown", "-R", f"{person.user}:", f"{person.home}/.config/libreoffice"])
 
 
 def step_office_make():
@@ -644,7 +644,7 @@ def step_office_make():
         '<draw:page draw:name="1"><draw:frame svg:x="2cm" svg:y="2cm" svg:width="20cm" svg:height="3cm">'
         f'<draw:text-box><text:p>{ORIGINAL}</text:p></draw:text-box></draw:frame></draw:page>'
         '</office:presentation></office:body></office:document>')
-    subprocess.run(["chown", "-R", f"{person.uid}:", src, docs])
+    subprocess.run(["chown", "-R", f"{person.user}:", src, docs])
     made, why = [], []
     for name, filt, kind in (("doc.html", "docx:MS Word 2007 XML", "docx"), ("sheet.csv", "xlsx:Calc MS Excel 2007 XML", "xlsx"),
                              ("slides.fodp", "pptx:Impress MS PowerPoint 2007 XML", "pptx")):
@@ -813,7 +813,7 @@ def step_dev_open_folder(app):
     folder = f"{person.home}/tacit-daily-project"
     os.makedirs(folder, exist_ok=True)
     open(f"{folder}/README.md", "w").write("# tacit-daily-project\n")
-    subprocess.run(["chown", "-R", f"{person.uid}:", folder])
+    subprocess.run(["chown", "-R", f"{person.user}:", folder])
     listed = bool(re.search(r"^MimeType=(.*;)?inode/directory(;|$)", open(e).read(), re.M))
     before = {w["address"] for w in person.clients()}
     t0 = now()

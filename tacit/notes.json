@@ -15,7 +15,20 @@
         "Settings can cancel tonight's update.",
         "If a start-up option ever leaves the screen blank, hold Space as the computer starts and choose Tacit (safe start).",
         "And about 650 smaller fixes across the desktop, Settings, Files, Apps, Praxis, Thyris and Setup."
-      ]
+      ],
+      "verified": {
+        "Thyris plays sound again. Since 1.2.14 every page was silent.": "vm: thyris-sound",
+        "The volume goes all the way to 100% on computers that still stopped at 99% after the last update.": "vm: volume-100",
+        "The Tacit stick starts straight away. It showed a loading screen for a minute or more first.": "vm-hand: the test ISO tacit-2026.11.14 started as a USB stick: no loading screen, Setup at 60 s; the published 1.2.14 ISO the same way showed the loading line for 67 s and Setup at 92 s; by the release session (Claude), cef-build-x64, 2026-11-14; tacit-fix/round3/release-1.2.15/LOG.md",
+        "A wallpaper you pick in Try Tacit shows at once.": "vm-hand: on that stick, Try Tacit first, Settings > Appearance, a wallpaper tile: the desktop showed it 1.5 s after Settings closed; by the release session (Claude), cef-build-x64, 2026-11-14; tacit-fix/round3/release-1.2.15/LOG.md",
+        "English in Setup comes with the US keyboard, so Shift+2 types @.": "vm-hand: on that stick, Setup's first page: English with Keyboard: English (US) (German after Deutsch, US again after English); Shift+2 in a Network name field typed @; by the release session (Claude), cef-build-x64, 2026-11-14; tacit-fix/round3/release-1.2.15/LOG.md",
+        "A wallpaper smaller than the screen fills it. It sat in the top-left corner with black around it.": "vm-hand: on the 1.2.14 disk updated to 1.2.15, an 800x450 picture chosen in Settings > Appearance filled the 1920x1080 screen edge to edge, no black; by the release session (Claude), cef-build-x64, 2026-11-14; tacit-fix/round3/release-1.2.15/LOG.md",
+        "Notifications show their message, not only who sent it.": "vm-hand: notify-send Ana \"are you coming tonight?\": the pop-up showed Ana and the message; by the release session (Claude), cef-build-x64, 2026-11-14; tacit-fix/round3/release-1.2.15/LOG.md",
+        "Put back from the Trash next to a file of the same name brings it back as \"notes 2.txt\", and a USB stick's trash shows in the Trash.": "vm-hand: Files: notes.txt to the trash, a new notes.txt, Put back -> \"Put back notes.txt as notes 2.txt\", both kept; a FAT stick with .Trash-1000 plugged in: the Trash listed it under the stick's name, and Put back restored it; by the release session (Claude), cef-build-x64, 2026-11-14; tacit-fix/round3/release-1.2.15/LOG.md",
+        "Settings can cancel tonight's update.": "vm-hand: an update waiting, Settings > About: Tonight set the 03:00 timer, Cancel tonight took it away (timer inactive, back to Tonight); by the release session (Claude), cef-build-x64, 2026-11-14; tacit-fix/round3/release-1.2.15/LOG.md",
+        "If a start-up option ever leaves the screen blank, hold Space as the computer starts and choose Tacit (safe start).": "vm-hand: Space held at start: the menu showed Tacit (safe start); chosen, it started (kernel and systemd lines on screen); with video=Virtual-1:d in tacit.conf the normal start was blank and the safe start reached the lock; by the release session (Claude), cef-build-x64, 2026-11-14; tacit-fix/round3/release-1.2.15/LOG.md",
+        "And about 650 smaller fixes across the desktop, Settings, Files, Apps, Praxis, Thyris and Setup.": "vm-hand: the round as a whole (RELEASE.md step 5: update through Settings, About, What's new, sign-in, a page in Thyris, Krita from Apps, the shell's log) and tools/vm-smoke 1.2.15, all six checks passed; by the release session (Claude), cef-build-x64, 2026-11-14; tacit-fix/round3/release-1.2.15/LOG.md"
+      }
     },
     {
       "version": "1.2.14",

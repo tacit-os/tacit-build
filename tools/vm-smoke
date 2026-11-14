@@ -31,6 +31,19 @@ machine() {
 		line=$(grep -E "^(pass|fail) $1:" <<<"$2" | tail -1)
 		echo "${line:-fail $1: $(tail -c 300 <<<"$2" | tr '\n' ' ')}" | tee -a "$record"
 	}
+	# a test computer left at its lock goes to sleep after its idle time (the 1.2.14 disk did, 15 minutes after vm disk),
+	# and a sleeping one has no agent to answer. Found asleep, it is started again (the power button), not woken: in this
+	# VM a restart after a wake from sleep never comes back (QEMU's S3 with OVMF: the shutdown ends and the computer is
+	# not reset, "Display output is not active"; seen on 1.2.14 and 1.2.15), and the update's restart is the check
+	# (off and on: QEMU's reset of a sleeping computer leaves it stopped in "prelaunch")
+	if [ "$(vm status 2>/dev/null)" = suspended ]; then
+		echo "the test computer was asleep: started again"
+		vm stop; sleep 3; vm disk
+		for i in $(seq 36); do sleep 5; vm agent >/dev/null 2>&1 && break; done
+		sleep 30    # the session up at its lock
+	fi
+	# asleep at its lock while it waits for the desktop after the update's restart: woken (nothing restarts it after that)
+	awake() { [ "$(vm status 2>/dev/null)" != suspended ] || { vm wake; sleep 5; }; }
 	if ! vm agent; then
 		cat >&2 <<-EOF
 		vm-smoke: the test computer's guest agent does not answer. Start the test disk with this checkout's tools/vm
@@ -47,6 +60,7 @@ machine() {
 	out=$(guest home 2>&1) || { said update "$out"; exit 1; }
 	echo "$out"
 	before=$(guest shell-errors 2>&1) || true
+	printf '== the shell log on %s: its warnings and errors\n%s\n' "$previous" "$before"
 	port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
 	# QEMU's user network takes the guest's 10.0.2.2 to this machine's 127.0.0.1
 	python3 -m http.server "$port" --bind 127.0.0.1 --directory repo > http.log 2>&1 & http=$!
@@ -57,7 +71,7 @@ machine() {
 	# down, up again through the install's own restart, and the desktop with its shell
 	for i in $(seq 60); do vm agent >/dev/null 2>&1 || break; sleep 5; done
 	up=""
-	for i in $(seq 240); do sleep 10; guest up >/dev/null 2>&1 && { up=1; break; }; done
+	for i in $(seq 240); do sleep 10; awake; guest up >/dev/null 2>&1 && { up=1; break; }; done
 	kill $http
 	guest restore-pacman || true
 	[ -n "$up" ] || { echo "fail update: the desktop did not come back within 40 minutes of the restart" | tee -a "$record"; exit 1; }
@@ -78,7 +92,9 @@ machine() {
 
 	said thyris-sound "$(wait=120 guest thyris-sound 2>&1)"
 	said apps-qml "$(wait=120 guest apps 2>&1)"
-	new=$(comm -13 <(sort -u <<<"$before") <(guest shell-errors 2>&1 | sort -u))
+	after=$(guest shell-errors 2>&1)
+	printf '== the shell log on %s: its warnings and errors\n%s\n' "$version" "$after"
+	new=$(comm -13 <(sort -u <<<"$before") <(sort -u <<<"$after"))
 	if [ -z "$new" ]; then echo "pass shell-log: nothing in the shell's log that it did not have on $previous"
 	else echo "fail shell-log: new in the shell's log: $(head -5 <<<"$new" | tr '\n' ' ')"; fi | tee -a "$record"
 	! grep -q '^fail ' "$record"
