@@ -94,7 +94,9 @@ publish() {
     for c in $( [ -n "$first" ] || git -C "$src" rev-list --reverse --first-parent "$base..$head"); do
         fill "$w" "$src" "$c"
         local msg
-        msg=$(git -C "$src" log -1 --format=%B "$c" | sed "s/$project/YOUR-PROJECT/g")
+        # a Signed-off-by with the owner's address is the private repo's (its commits are signed off by them); the public
+        # commit is by Tacit, so that line stays private
+        msg=$(git -C "$src" log -1 --format=%B "$c" | sed "/^Signed-off-by: .*$owner_mail/d; s/$project/YOUR-PROJECT/g")
         if grep -rqI --exclude-dir=.git -e "$owner_mail" -e "$project" "$w" || grep -q "$owner_mail" <<<"$msg"; then
             echo "publish-source: $name at ${c:0:7} still names the owner's address or cloud project; nothing pushed" >&2
             grep -rlI --exclude-dir=.git -e "$owner_mail" -e "$project" "$w" >&2 || true
