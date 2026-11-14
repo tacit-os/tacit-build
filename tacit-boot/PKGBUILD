@@ -1,14 +1,16 @@
 # Tacit: the boot splash - one picture from the first frame to the lock screen.
 pkgname=tacit-boot
 pkgver=0.3.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Tacit: boot and shutdown splash"
 arch=('aarch64' 'x86_64')
 url="https://github.com/ciscobugger/tacit-boot"
 license=('GPL-3.0-or-later')
-# The Hyprland plugin is built for one Hyprland version and refused by any other: pin the one it was built against,
-# so Hyprland only moves when this package is rebuilt with it.
-_hyprver=$(pkg-config --modversion hyprland 2>/dev/null)
+# The Hyprland plugins are built for one build of Hyprland: pin that build, Arch's pkgrel too, so Hyprland only moves when
+# this package is rebuilt with it. Pinned by version alone, Arch's rebuild of 0.57.0 as -3 (against aquamarine 0.16 and
+# hyprgraphics 0.6, whose structures the plugins read) went in under plugins built for -1: Hyprland's own check, its
+# commit, was the same.
+_hyprver=$(pacman -Q hyprland 2>/dev/null | cut -d' ' -f2)
 depends=('libdrm' 'glib2' 'python' 'python-numpy' 'python-pillow' 'systemd' "hyprland=${_hyprver:-0}")
 makedepends=('git' 'hyprland' 'pixman' 'pkgconf' 'libinput' 'libxkbcommon' 'wayland')
 conflicts=('plymouth')

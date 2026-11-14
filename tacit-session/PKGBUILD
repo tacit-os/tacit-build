@@ -2,11 +2,14 @@
 # and win), the lock, idle and screen share settings, the "Tacit" session and Tacit's login screen.
 pkgname=tacit-session
 pkgver=0.2.1
-pkgrel=60
+pkgrel=61
 pkgdesc="Tacit: the Hyprland session"
 arch=('any')
 url="https://github.com/ciscobugger/tacit-shell"
 license=('GPL-3.0-or-later')
+# the day of Arch this release was tested on (tools/arch-day moves Tacit's mirror there only when this says it): the
+# mirror list's fallback below Tacit's server is Arch's archive of that day (tacit-session.install's _archive, Setup)
+_archday=2026/11/09
 depends=('hyprland' 'hypridle' 'matugen' 'hyprlock' 'xdg-desktop-portal-hyprland' 'swaybg' 'sddm' 'weston' 'python' 'tacit-shell' 'tacit-portal' 'tacit-boot'
          # the look GTK and Qt apps are given (xdg/), compressed swap and the guard for a full memory (memory/)
          'adw-gtk-theme' 'kvantum' 'zram-generator' 'earlyoom'
@@ -20,7 +23,7 @@ depends=('hyprland' 'hypridle' 'matugen' 'hyprlock' 'xdg-desktop-portal-hyprland
 makedepends=('git')
 install=tacit-session.install
 backup=('etc/xdg/kitty/kitty.conf')
-source=("tacit-shell::git+https://github.com/ciscobugger/tacit-shell.git#commit=5a249204755cedf977383ff2734f986f277c7605")
+source=("tacit-shell::git+https://github.com/ciscobugger/tacit-shell.git#commit=9aec298aeaca5bf909f950b43ac8b180cd87998e")
 sha256sums=('SKIP')
 
 package() {
@@ -86,4 +89,5 @@ package() {
 	install -Dm644 updates/50-tacit-updates.rules -t "$pkgdir/usr/share/polkit-1/rules.d/"
 	# the keyboard and touchpad awake (udev/): a HID device that autosuspends does not always come back
 	install -Dm644 udev/99-tacit-input-awake.rules -t "$pkgdir/usr/lib/udev/rules.d/"
+	printf '%s\n' "$_archday" > "$pkgdir/usr/share/tacit/arch-day"
 }

@@ -6,20 +6,24 @@
 # tools/iso image has qemu-guest-agent. Commands reach it through that agent (vm run), not as typed keys.
 #   update        the previous release updated the way Settings does (the download, Restart, the install at the next
 #                 start) from a test repo (the live database and this release's packages), over a lived-in home: its
-#                 own settings file with Loudest allowed at 99, a pin of its own and a wallpaper; after it, 99 is 100
-#                 and the pin and the wallpaper stayed
-#   plugins       hyprctl plugins list shows tacit-frame
+#                 own settings file (Loudest allowed at 99 where the file is from before 1.2.15), a pin of its own and a
+#                 wallpaper; after it, Loudest allowed is 100 and the pin and the wallpaper stayed
+#   plugins       every plugin the session loads is loaded and built for the Hyprland that runs, which tacit-boot and
+#                 tacit-portal pin
+#   mirrors       after the update, pacman takes Arch from Tacit's server, then Arch's archive of tacit-session's day,
+#                 and from no other
 #   volume-100    the volume key (QEMU's volumeup, through Hyprland's bind and the shell's protection) takes 90% to
 #                 100%, and it stays there
 #   thyris-sound  a page in Thyris playing a tone has a playback stream in PipeWire, and the speaker hears it
 #   apps-qml      Settings, Praxis and Files start with no QML error in their logs
 #   shell-log     the shell's log has no warning or error that it did not have on the previous release
+# ARCH_MIRROR at a candidate day of Arch (as for tools/cloud-packages) updates the test computer from that day too.
 set -eu
 here=$(dirname "$(readlink -f "$0")")
 
-# On the cloud machine, in ~/tacit-vm/smoke: tools/vm-smoke --machine <version> <previous>
+# On the cloud machine, in ~/tacit-vm/smoke: tools/vm-smoke --machine <version> <previous> [<candidate day>]
 machine() {
-	version=$1 previous=$2
+	version=$1 previous=$2 day=${3:-}
 	cd "$here"
 	vm() { ~/tacit-vm/vm "$@"; }
 	guest() { ~/tacit-vm/vm run --timeout "${wait:-300}" -- /bin/bash /var/tmp/vm-smoke-guest "$@"; }
@@ -65,7 +69,7 @@ machine() {
 	# QEMU's user network takes the guest's 10.0.2.2 to this machine's 127.0.0.1
 	python3 -m http.server "$port" --bind 127.0.0.1 --directory repo > http.log 2>&1 & http=$!
 	trap 'kill $http 2>/dev/null || true' EXIT
-	out=$(wait=1800 guest update "http://10.0.2.2:$port" 2>&1) || true
+	out=$(wait=1800 guest update "http://10.0.2.2:$port" $day 2>&1) || true
 	grep -qx armed <<<"$out" || { said update "$out"; exit 1; }
 	vm run --timeout 10 -- systemctl reboot || true
 	# down, up again through the install's own restart, and the desktop with its shell
@@ -78,6 +82,7 @@ machine() {
 	sleep 30    # the shell and PipeWire settle
 	said update "$(guest updated "$version" 2>&1)"
 	said plugins "$(guest plugins 2>&1)"
+	said mirrors "$(guest mirrors 2>&1)"
 
 	guest volume-set 0.90 || true
 	v=""
@@ -108,6 +113,7 @@ fi
 
 cd "$(dirname "$here")"
 version=${1:-}
+day=$(grep -o '20[0-9][0-9]/[01][0-9]/[0-3][0-9]' <<<"${ARCH_MIRROR:-}" || true)
 [ -n "$version" ] || { echo "usage: tools/vm-smoke <version>" >&2; exit 2; }
 tv=$(cd tacit && bash -c 'source PKGBUILD; echo "$pkgver"')
 [ "$tv" = "$version" ] || { echo "vm-smoke: tacit's recipe is $tv, not $version" >&2; exit 1; }
@@ -148,11 +154,11 @@ on "rm -rf ~/tacit-vm/smoke && mkdir -p ~/tacit-vm"
 gcloud compute scp "${at[@]}" "$tmp/smoke.tar" $vm:~/tacit-vm/ >/dev/null
 # the run outlasts an ssh session (an update and two restarts): started apart, then waited for
 on "cd ~/tacit-vm && tar -xf smoke.tar && rm smoke.tar && cp smoke/vm vm \
-	&& (setsid nohup bash -c 'cd ~/tacit-vm/smoke && ./vm-smoke --machine $version $previous > run.log 2>&1; echo \$? > done' > /dev/null 2>&1 < /dev/null &)"
+	&& (setsid nohup bash -c 'cd ~/tacit-vm/smoke && ./vm-smoke --machine $version $previous $day > run.log 2>&1; echo \$? > done' > /dev/null 2>&1 < /dev/null &)"
 until on "test -f ~/tacit-vm/smoke/done" 2>/dev/null; do sleep 30; done
 on "cat ~/tacit-vm/smoke/run.log"
 gcloud compute scp "${at[@]}" "$vm:~/tacit-vm/smoke/vm-smoke-$version" "$tmp/" >/dev/null \
 	|| { echo "vm-smoke: no record came back from $vm" >&2; exit 1; }
-{ date -Is; echo "tacit $version, from $previous, arch day $(tools/arch-day)"; cat "$tmp/vm-smoke-$version"; } > "$out/vm-smoke-$version"
+{ date -Is; echo "tacit $version, from $previous, arch day ${day:-$(tools/arch-day)}${day:+ (a candidate: Tacit ships $(tools/arch-day))}"; cat "$tmp/vm-smoke-$version"; } > "$out/vm-smoke-$version"
 echo "recorded: $out/vm-smoke-$version"
 ! grep -q '^fail ' "$out/vm-smoke-$version"

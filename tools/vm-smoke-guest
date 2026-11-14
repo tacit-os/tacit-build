@@ -67,8 +67,11 @@ up)
 	session && [ -n "$shell" ] && qs_pid "$shell" >/dev/null
 	;;
 home)
-	# a home from before 1.2.14: the person's own settings file, with "Loudest allowed" at the old default 99, a pin of
-	# their own after foot, and a wallpaper of their own; kept in $state to compare with after the update
+	# a lived-in home: the person's own settings file, a pin of their own after foot, a wallpaper of their own, and, in a
+	# file from before 1.2.15's settings step (its configVersion below 5: 1.2.14 left 4), "Loudest allowed" at the old
+	# default 99, which that step makes 100; kept in $state to compare with after the update. A file the running shell
+	# has been through that step with keeps its 100: a 99 written into it is the person's own choice, which no update
+	# changes (from 1.2.15, whose file is at 7, the check expected 100 and the volume key stopped at 98 %)
 	need_session home
 	f=$home/.config/illogical-impulse/config.json
 	[ -f "$f" ] || { echo "fail home: no settings file at $f"; exit 1; }
@@ -77,7 +80,8 @@ home)
 import json, sys
 f, pic, keep = sys.argv[1:]
 c = json.load(open(f))
-c.setdefault("audio", {}).setdefault("protection", {})["maxAllowed"] = 99
+if c.get("configVersion", 0) < 5:
+    c.setdefault("audio", {}).setdefault("protection", {})["maxAllowed"] = 99
 pins = c.setdefault("dock", {}).get("pinnedApps") or ["praxis", "org.quickshell", "foot", "thyris", "graphis", "settings"]
 if "org.mozilla.firefox" not in pins:
     pins.insert(pins.index("foot") + 1 if "foot" in pins else len(pins), "org.mozilla.firefox")
@@ -87,7 +91,7 @@ json.dump(c, open(f + ".smoke", "w"), indent=2)
 json.dump(c, open(keep, "w"), indent=2)
 EOF
 	chown "$user:" "$f.smoke" && mv "$f.smoke" "$f"
-	echo "the settings file holds Loudest allowed 99, the pins $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["dock"]["pinnedApps"])' "$f"), the wallpaper ${pic:-none}"
+	echo "the settings file holds Loudest allowed $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["audio"]["protection"]["maxAllowed"])' "$f"), the pins $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["dock"]["pinnedApps"])' "$f"), the wallpaper ${pic:-none}"
 	;;
 shell-errors)
 	need_session shell-log
@@ -100,20 +104,32 @@ update)
 	# SigLevel Never, not Optional: the live repo's tacit.db.sig stays in the sync folder when the test repo has none
 	# (pacman 7.1 keeps it on a 404), and Optional checked the test database against it ("signature from Tacit packages
 	# is invalid"): the download failed on every test disk that had checked the live repo before
-	url=$1
+	# A release built on a candidate day of Arch (tools/vm-smoke with ARCH_MIRROR) has that day's archive first in Arch's
+	# repositories as well, in pacman.conf beside the mirror list, so the update's own step on the mirror list is seen
+	# as it leaves it (the mirrors check)
+	url=$1 day=${2:-}
 	[ -f "$state/pacman.conf" ] || cp /etc/pacman.conf "$state/pacman.conf"
-	awk -v url="$url" '/^\[/ { in_tacit = ($0 == "[tacit]") } in_tacit && /^(SigLevel|Server|Include)/ { next }
-		{ print } $0 == "[tacit]" { print "SigLevel = Never"; print "Server = " url }' "$state/pacman.conf" > /etc/pacman.conf
+	awk -v url="$url" -v day="$day" '/^\[/ { in_tacit = ($0 == "[tacit]") } in_tacit && /^(SigLevel|Server|Include)/ { next }
+		{ print } $0 == "[tacit]" { print "SigLevel = Never"; print "Server = " url }
+		day != "" && ($0 == "[core]" || $0 == "[extra]" || $0 == "[multilib]") { print "Server = https://archive.archlinux.org/repos/" day "/$repo/os/$arch" }' \
+		"$state/pacman.conf" > /etc/pacman.conf
 	/usr/lib/tacit/tacit-fetch-updates now || { echo "fail update: the download failed ($?)"; exit 1; }
 	pacman -Qu tacit 2>/dev/null || { echo "fail update: no new tacit waits after the download"; exit 1; }
 	/usr/lib/tacit/tacit-update now || { echo "fail update: the install was not armed ($(tail -3 /var/lib/tacit/download.log | tr '\n' ' '))"; exit 1; }
 	echo "armed"
 	;;
 restore-pacman)
+	# the computer's own pacman.conf back, and the test repo's [tacit] database out of the sync folder (into $state), so
+	# the next look fetches the live one: newer than the live one, it was kept at every sync after, beside the live
+	# signature, [tacit] said "invalid or corrupted database (PGP signature)", and Apps found no app at all (the 1.2.16
+	# round, after vm-smoke)
 	[ -f "$state/pacman.conf" ] && cp "$state/pacman.conf" /etc/pacman.conf
+	for f in /var/lib/pacman/sync/tacit.db /var/lib/pacman/sync/tacit.db.sig; do [ -e "$f" ] && mv -f "$f" "$state/"; done
+	true
 	;;
 updated)
-	# the release came by the Restart, and the home came through it: 99 became 100, the person's pin and wallpaper stayed
+	# the release came by the Restart, and the home came through it: Loudest allowed is 100 (99 became 100 in a file from
+	# before 1.2.15's step), the person's pin and wallpaper stayed
 	need_session update
 	want=$1 have=$(pacman -Q tacit | awk '{ print $2 }')
 	result=$(cat /var/lib/tacit/update-result 2>/dev/null)
@@ -138,14 +154,46 @@ pins = c["dock"]["pinnedApps"]
 if [p for p in b["dock"]["pinnedApps"] if p not in pins]:
     why.append(f"pins were lost: {pins}")
 print(f"fail update: {'; '.join(why)}" if why else
-      f"pass update: tacit {have} installed at the restart; Loudest allowed 99 became 100, the wallpaper and the pins {pins} stayed")
+      f"pass update: tacit {have} installed at the restart; Loudest allowed 100 (it was {b['audio']['protection']['maxAllowed']}), the wallpaper and the pins {pins} stayed")
 EOF
 	;;
 plugins)
+	# every plugin the session loads (each in /usr/lib/tacit/hyprland, tacit-frame unless the line on windows is off) is
+	# loaded and carries the commit of the Hyprland that runs, and tacit-boot's and tacit-portal's pin names the build
+	# installed: Hyprland's red "Failed to load plugin" is for one not loaded only (tacit-frame refuses another commit),
+	# while tacit-ground and tacit-share load under any build without a word (Discord, 2026-11-14: Hyprland 0.57.2 under
+	# plugins built for 0.57.0)
 	need_session plugins
 	out=$(as_person hyprctl plugins list 2>&1)
-	grep -q 'tacit-frame' <<<"$out" && echo "pass plugins: Hyprland has tacit-frame loaded ($(grep -c '^Plugin' <<<"$out") plugins)" \
-		|| echo "fail plugins: hyprctl plugins list has no tacit-frame: $(tr '\n' ' ' <<<"$out" | cut -c1-300)"
+	commit=$(as_person hyprctl version -j 2>/dev/null | python3 -c 'import json, sys; print(json.load(sys.stdin).get("commit", ""))' 2>/dev/null)
+	build=$(pacman -Q hyprland | awk '{ print $2 }')
+	off=$(printf '%s\n' "${envs[@]}" | sed -n 's/^XDG_STATE_HOME=//p'); off=${off:-$home/.local/state}/quickshell/user/window-line-off
+	why="" n=0
+	for so in /usr/lib/tacit/hyprland/*.so; do
+		p=$(basename "$so" .so)
+		[ "$p" = tacit-frame ] && [ -e "$off" ] && continue
+		n=$((n + 1))
+		grep -qE "^Plugin $p( |:)" <<<"$out" || why="$why; $p is not loaded"
+		[ -z "$commit" ] || grep -aqF "$commit" "$so" || why="$why; $p is built for another Hyprland than ${commit:0:7}"
+	done
+	for p in tacit-boot tacit-portal; do
+		pin=$(pacman -Qi "$p" | sed -n 's/.*hyprland=\([^ ]*\).*/\1/p')
+		[ "$pin" = "$build" ] || [ "$pin" = "${build%-*}" ] || why="$why; $p pins hyprland=$pin, $build is installed"
+	done
+	[ -n "$commit" ] || why="$why; hyprctl version gives no commit"
+	[ -z "$why" ] && echo "pass plugins: Hyprland $build (${commit:0:7}) has all $n of the session's plugins loaded, each built for it, and tacit-boot and tacit-portal pin it" \
+		|| echo "fail plugins: ${why#; } (hyprctl plugins list: $(grep '^Plugin' <<<"$out" | tr '\n' ' ' | cut -c1-200))"
+	;;
+mirrors)
+	# after the update, Arch's servers as pacman takes them: Tacit's, then Arch's archive of the day tacit-session names
+	# (/usr/share/tacit/arch-day), and no other: no live mirror to fall back to when Tacit's server is slow (Discord,
+	# 2026-11-14: two live ones below it gave a newer Hyprland than Tacit tested)
+	day=$(cat /usr/share/tacit/arch-day 2>/dev/null)
+	want="https://mirror.tacitos.co/extra/os/x86_64 https://archive.archlinux.org/repos/$day/extra/os/x86_64"
+	got=$(pacman-conf --repo extra Server 2>&1 | paste -sd ' ')
+	[ -n "$day" ] && [ "$got" = "$want" ] \
+		&& echo "pass mirrors: Tacit's server, then Arch's archive of $day, and no other ($(grep -c '^#Server' /etc/pacman.d/mirrorlist) of the list's servers commented out)" \
+		|| echo "fail mirrors: pacman takes ${got:-no server}; wanted $want"
 	;;
 volume-set)
 	# up in steps of 5 %: the shell takes back a rise over its "Largest jump" (10 % unless changed) at once, so one write

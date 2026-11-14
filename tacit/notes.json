@@ -1,6 +1,22 @@
 {
   "releases": [
     {
+      "version": "1.2.16",
+      "date": "2026-11-14",
+      "changes": [
+        "The line above every window works again on computers that had taken a newer window manager than the one Tacit was tested with.",
+        "Updates keep to the set Tacit tested, even when Tacit's update server is slow or down.",
+        "An app's page in Apps can remove it: Remove, under its main button.",
+        "You can choose what the top corners of the screen open, and keep the screen's corners square, in Settings › Desktop."
+      ],
+      "verified": {
+        "The line above every window works again on computers that had taken a newer window manager than the one Tacit was tested with.": "vm: plugins",
+        "Updates keep to the set Tacit tested, even when Tacit's update server is slow or down.": "vm-hand: a 1.2.15 disk drifted to Hyprland 0.57.2 (Tacit's server, then two live Arch mirrors in its list) updated to 1.2.16: the list became Tacit's server, then Arch's archive of 2026/11/09, the live ones commented out (vm-smoke mirrors passed); with mirror.tacitos.co unreachable, pacman -Syy took an extra.db identical to 2026/11/09's, while the list from before took today's from the live mirror; seen by the fix14 session",
+        "An app's page in Apps can remove it: Remove, under its main button.": "vm-hand: on the clean 1.2.15 disk updated to 1.2.16, Apps got galculator; its page then said On this computer · Remove under Open; Remove took it out (its bundle folder emptied) and the page offered Get again; seen by the fix14 session",
+        "You can choose what the top corners of the screen open, and keep the screen's corners square, in Settings › Desktop.": "vm-hand: Settings › Desktop › Corners of the screen on the same disk: Top left set to Control panel, a press in the top-left corner opened the Control panel; Round the screen corners off, the screen's corners were square; seen by the fix14 session"
+      }
+    },
+    {
       "version": "1.2.15",
       "date": "2026-11-14",
       "changes": [

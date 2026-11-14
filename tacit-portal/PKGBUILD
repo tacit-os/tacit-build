@@ -2,14 +2,14 @@
 # picker as Tacit sheets. The sheets themselves are part of tacit-shell.
 pkgname=tacit-portal
 pkgver=0.1.3
-pkgrel=1
+pkgrel=2
 pkgdesc="Tacit: file dialogs, Open with, keyring prompt, share picker and live window shares"
 arch=('aarch64' 'x86_64')
 url="https://github.com/ciscobugger/tacit-portal"
 license=('GPL-3.0-or-later')
-# tacit-share.so (the window a share shows keeps drawing off screen) is built for one Hyprland version and refused by any
-# other: pin the one it was built against, as tacit-boot does, so Hyprland only moves when this package is rebuilt with it
-_hyprver=$(pkg-config --modversion hyprland 2>/dev/null)
+# tacit-share.so (the window a share shows keeps drawing off screen) is built for one build of Hyprland: pin that build,
+# Arch's pkgrel too, as tacit-boot does, so Hyprland only moves when this package is rebuilt with it
+_hyprver=$(pacman -Q hyprland 2>/dev/null | cut -d' ' -f2)
 depends=('qt6-base' 'gcr' 'glib2' 'json-glib' 'xdg-desktop-portal' 'python' "hyprland=${_hyprver:-0}")
 makedepends=('cmake' 'git' 'hyprland' 'pixman' 'libdrm' 'pkgconf')
 source=("git+https://github.com/ciscobugger/tacit-portal.git#tag=v$pkgver")
