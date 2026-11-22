@@ -1,6 +1,26 @@
 {
   "releases": [
     {
+      "version": "1.2.17",
+      "date": "2026-11-23",
+      "changes": [
+        "Settings › Lock & sleep shows the times again. Before, all three always said Never.",
+        "Tacit no longer goes back to the login screen after a restart when the screen is smaller than at the first start, as in a window on a Mac.",
+        "Closing a window no longer brings a message that reads like an error.",
+        "Activity shows the memory the graphics driver and the kernel hold as a row of its own, so the list explains most of the memory in use.",
+        "A file's menu in Files has Copy folder location.",
+        "About 40 smaller fixes in the notch, Settings, Files, Praxis, the lock screen and the desktop."
+      ],
+      "verified": {
+        "Settings › Lock & sleep shows the times again. Before, all three always said Never.": "vm-hand: the 1.2.16 test computer (fresh from its ISO) updated to 1.2.17 the way Settings does (tools/vm-smoke, all 7 pass); Settings > Lock & sleep showed 5 min, 10 min and 15 min, the packaged times (1.2.16 showed Never for all three)",
+        "Tacit no longer goes back to the login screen after a restart when the screen is smaller than at the first start, as in a window on a Mac.": "vm-hand: the 1.2.16 Arm image with tacit-boot 0.3.0-3, a first session wrote the boot pictures (1920x1080 still on a 1280x800 screen), a restart came up at Tacit's lock, the password gave a session that kept running (8 min, no core dumps; before, Hyprland aborted within 30 s and SDDM's login came back)",
+        "Closing a window no longer brings a message that reads like an error.": "vm-hand: the 1.2.16 test computer (fresh from its ISO) updated to 1.2.17 the way Settings does (tools/vm-smoke, all 7 pass); Alt+F4 on a terminal showed the tip once, from Tacit; a second Alt+F4 showed nothing; Super+Q closed the terminal with no note",
+        "Activity shows the memory the graphics driver and the kernel hold as a row of its own, so the list explains most of the memory in use.": "vm-hand: the 1.2.16 test computer (fresh from its ISO) updated to 1.2.17 the way Settings does (tools/vm-smoke, all 7 pass); Activity's Now page showed Tacit itself 1.3 GB and Graphics and kernel 0.8 GB under 2.3 GB in use (Activity leaves out its own window)",
+        "A file's menu in Files has Copy folder location.": "vm-hand: the 1.2.16 test computer (fresh from its ISO) updated to 1.2.17 the way Settings does (tools/vm-smoke, all 7 pass); a right click on a file in Files showed Copy folder location under Copy path",
+        "About 40 smaller fixes in the notch, Settings, Files, Praxis, the lock screen and the desktop.": "vm-hand: the 1.2.16 test computer (fresh from its ISO) updated to 1.2.17 the way Settings does (tools/vm-smoke, all 7 pass); Settings, Praxis, Files and Activity opened with no QML error and the shell's log has nothing new (vm-smoke apps-qml, shell-log); each of the fixes has a test (tests/run 342 of 342)"
+      }
+    },
+    {
       "version": "1.2.16",
       "date": "2026-11-14",
       "changes": [

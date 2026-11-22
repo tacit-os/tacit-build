@@ -1,7 +1,7 @@
 # Tacit: the boot splash - one picture from the first frame to the lock screen.
 pkgname=tacit-boot
 pkgver=0.3.0
-pkgrel=2
+pkgrel=3
 pkgdesc="Tacit: boot and shutdown splash"
 arch=('aarch64' 'x86_64')
 url="https://github.com/ciscobugger/tacit-boot"
@@ -15,7 +15,7 @@ depends=('libdrm' 'glib2' 'python' 'python-numpy' 'python-pillow' 'systemd' "hyp
 makedepends=('git' 'hyprland' 'pixman' 'pkgconf' 'libinput' 'libxkbcommon' 'wayland')
 conflicts=('plymouth')
 install=tacit-boot.install
-source=("git+https://github.com/ciscobugger/tacit-boot.git#tag=v$pkgver")
+source=("git+https://github.com/ciscobugger/tacit-boot.git#commit=eac4eb5de81f1eb06b2dc731224cebb55150014c")
 sha256sums=('SKIP')
 options=('!debug')
 
