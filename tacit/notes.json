@@ -1,6 +1,18 @@
 {
   "releases": [
     {
+      "version": "1.2.18",
+      "date": "2026-11-23",
+      "changes": [
+        "Files and Tacit's other windows are solid when the window blur is off (Settings › Appearance, or Game mode), so nothing shows through behind their text.",
+        "A file's path pasted into Files' path field opens its folder with that file selected."
+      ],
+      "verified": {
+        "Files and Tacit's other windows are solid when the window blur is off (Settings › Appearance, or Game mode), so nothing shows through behind their text.": "vm-hand: the 1.2.17 test computer updated to 1.2.18 the way Settings does (tools/vm-smoke, all pass); Settings › Appearance › Blur behind see-through windows off: Files in front of another window drew a solid ground; on again: frosted as before",
+        "A file's path pasted into Files' path field opens its folder with that file selected.": "vm-hand: the same computer: a file's path pasted into Files' path field (Ctrl+L) opened its folder with the file selected"
+      }
+    },
+    {
       "version": "1.2.17",
       "date": "2026-11-23",
       "changes": [
