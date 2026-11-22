@@ -1,6 +1,26 @@
 {
   "releases": [
     {
+      "version": "1.2.19",
+      "date": "2026-11-23",
+      "changes": [
+        "Settings › Appearance › See-through: Solid makes everything solid at once, windows, terminals, browsers and the notch, and Clear lets less of the wallpaper through.",
+        "With the window blur off, terminals and browsers are solid too, so the wallpaper never shows sharp under their text.",
+        "Files opens at the size you chose, and a window hidden in the dock comes back from it.",
+        "Super+Tab shows a window hidden in the dock, faded, on the desktop it was on, and a click brings it back.",
+        "A window at its smallest size comes back where it was, from the dock or after a short drag on its band, not at the bottom of the screen.",
+        "Thyris no longer says it did not close cleanly after a shutdown or a log-out. From alex."
+      ],
+      "verified": {
+        "Settings › Appearance › See-through: Solid makes everything solid at once, windows, terminals, browsers and the notch, and Clear lets less of the wallpaper through.": "vm-hand: the 1.2.18 test computer updated to 1.2.19 the way Settings does (tools/vm-smoke, all pass); See-through set to Solid in Settings › Appearance: a terminal opened before it, over a terminal of text, and Files drew one flat grey with nothing showing through (under Frosted the text blurred through), and windows not in use were no longer faded (1 for 0.82); Frosted again: the text blurred through and 0.82 as before; Clear: 0.3 let through (1.2.18's Clear let 0.4 to 0.6)",
+        "With the window blur off, terminals and browsers are solid too, so the wallpaper never shows sharp under their text.": "vm-hand: the 1.2.18 test computer updated to 1.2.19 the way Settings does (tools/vm-smoke, all pass); the blur switched off as Settings does it: a terminal opened before it, over a terminal of text, and Files drew one flat grey (the text behind showed through on 1.2.18); on again: frosted as before",
+        "Files opens at the size you chose, and a window hidden in the dock comes back from it.": "vm-hand: the 1.2.18 test computer updated to 1.2.19 the way Settings does (tools/vm-smoke, all pass); a new Files window opened at 1000 x 640 where 640 x 400 had been kept; Files dragged into the dock came back from its dock button, where it was",
+        "Super+Tab shows a window hidden in the dock, faded, on the desktop it was on, and a click brings it back.": "vm-hand: the 1.2.18 test computer updated to 1.2.19 the way Settings does (tools/vm-smoke, all pass); Files dragged by its band into the dock, then Super+Tab on another desktop: Files faded on its own desktop, where it was; a click there brought it back to that desktop and place",
+        "A window at its smallest size comes back where it was, from the dock or after a short drag on its band, not at the bottom of the screen.": "vm-hand: the 1.2.18 test computer updated to 1.2.19 the way Settings does (tools/vm-smoke, all pass); Files at 640 x 400: a short drag on its band, let go: back at its place; dragged into the dock and brought back: at its place (on 1.2.18 it came back at 429,746 from 640,359)",
+        "Thyris no longer says it did not close cleanly after a shutdown or a log-out. From alex.": "vm-hand: the 1.2.18 test computer updated to 1.2.19 the way Settings does (tools/vm-smoke, all pass); Thyris started as the dock starts it (app-scope, in the log-in session), the computer restarted with it open, Thyris started again: its tasks back and no \"did not close cleanly\" page (the session was number 1 before and after the restart, and Thyris 26 showed the page)"
+      }
+    },
+    {
       "version": "1.2.18",
       "date": "2026-11-23",
       "changes": [
