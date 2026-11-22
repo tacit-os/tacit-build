@@ -1,6 +1,20 @@
 {
   "releases": [
     {
+      "version": "1.2.20",
+      "date": "2026-11-23",
+      "changes": [
+        "With the window blur off or See-through on Solid, a browser's menus no longer open in a black box (Brave's bookmark folders), and terminals stay solid.",
+        "Settings › Appearance › See-through and the window blur are one setting: with the blur off, Solid shows as chosen, and picking Clear or Frosted turns the blur on.",
+        "Frosted and Clear are calmer: Frosted lets a tenth of the wallpaper through and Clear at most a fifth, in Tacit's apps, Files and the terminals."
+      ],
+      "verified": {
+        "With the window blur off or See-through on Solid, a browser's menus no longer open in a black box (Brave's bookmark folders), and terminals stay solid.": "vm-hand: the 1.2.19 test computer updated to 1.2.20 the way Settings does (tools/vm-smoke, all pass); the blur off, Chromium's right-click menu sat in a black (0,0,0) margin on 1.2.19 and in the page's colour with this; foot over a terminal of text drew one flat grey",
+        "Settings › Appearance › See-through and the window blur are one setting: with the blur off, Solid shows as chosen, and picking Clear or Frosted turns the blur on.": "vm-hand: the 1.2.19 test computer updated to 1.2.20 the way Settings does (tools/vm-smoke, all pass); the blur off: Solid shown as chosen; Clear picked: the blur on (Hyprland, Settings › Windows' switch) and Clear shown; the blur off again: Solid shown, on again: Clear",
+        "Frosted and Clear are calmer: Frosted lets a tenth of the wallpaper through and Clear at most a fifth, in Tacit's apps, Files and the terminals.": "vm-hand: the 1.2.19 test computer updated to 1.2.20 the way Settings does (tools/vm-smoke, all pass); open terminals took alpha 0.90 at the first start of 1.2.20, the look unchanged (0.85 on 1.2.19); Clear picked stored 0.2 (0.3 on 1.2.19)"
+      }
+    },
+    {
       "version": "1.2.19",
       "date": "2026-11-23",
       "changes": [
